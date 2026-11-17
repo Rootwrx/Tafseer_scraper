@@ -832,7 +832,7 @@ def _d_page_number_footer(doc, font: str) -> None:
     _d_run(par, " —", font, 10, color="888888")
 
 
-LINE_SPACING = 1.05   # set from --line_spacing
+LINE_SPACING = 0.9   # set from --line_spacing
 PAGE_BG: str | None = "F3EEE2"   # set from --page_bg (None = white page)
 
 
@@ -875,9 +875,10 @@ def _d_setup(doc, font: str, size: float) -> None:
     rf = normal.element.get_or_add_rPr().get_or_add_rFonts()
     rf.set(qn("w:cs"), font)
     _d_bidi(normal)
-    for lvl in range(1, 4):  # built-in headings default to LTR + Calibri + italics
-        hs = doc.styles[f"Heading {lvl}"]
+    for name in ("Title", "Heading 1", "Heading 2", "Heading 3", "Heading 4"):
+        hs = doc.styles[name]   # built-in headings default to LTR + Calibri + italics
         hs.font.italic = False
+        hs.paragraph_format.line_spacing = LINE_SPACING
         hs.element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:cs"), font)
         hs.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
         _d_bidi(hs)
@@ -1104,7 +1105,7 @@ def _d_outline(par, level: int) -> None:
     ppr.insert_element_before(el, "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr", "w:pPrChange")
 
 
-def _d_tafsir_block(container, item, e, font: str, size: float, title_size: float = 22,
+def _d_tafsir_block(container, item, e, font: str, size: float, title_size: float = 20,
                     bold: bool = True) -> None:
     """One tafsir (title + text + footnotes) into a Document or a table cell."""
     C = _DOCX_COLORS
@@ -1136,7 +1137,7 @@ def _d_tafsir_block(container, item, e, font: str, size: float, title_size: floa
 
 
 def build_combined_docx(out_path: Path, order: list[str], sections, quran, font: str,
-                        size: float, title_extra: str = "", title_size: float = 22,
+                        size: float, title_extra: str = "", title_size: float = 20,
                         bold: bool = True) -> None:
     """sections = [(surah, entries)] from combined_entries()."""
     if _docxlib is None:
@@ -1168,7 +1169,7 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
             _d_heading(doc, f"الآية {_rng(e['a_start'], e['a_end'])}", 2, font, size + 2, C["ayah"])
             head = quran_heading(quran, s, e["a_start"], e["a_end"])
             if head:
-                vp = _d_par(doc, head, font, size + 4, bold=True, color=C["quran"], after=6)
+                vp = _d_par(doc, head, font, size + 2, bold=True, color=C["quran"], after=6)
                 _d_outline(vp, 2)   # collapsible: hides all tafsirs of this ayah
             for it in e["items"]:
                 _d_tafsir_block(doc, it, e, font, size, title_size, bold)
@@ -1259,13 +1260,13 @@ def main():
     p.add_argument("--font", default="Kitab",
                    help="DOCX font (must be installed on the machine opening the file). Word has no CSS-style "
                         "fallback stack, so only the first name of a list like \"Kitab, system-ui\" is used")
-    p.add_argument("--docx_size", type=float, default=18, help="DOCX body size in pt")
-    p.add_argument("--tafsir_title_size", type=float, default=22,
-                   help="DOCX size in pt of the tafsir names in --combine files (default 22)")
+    p.add_argument("--docx_size", type=float, default=16, help="DOCX body size in pt (default 16)")
+    p.add_argument("--tafsir_title_size", type=float, default=20,
+                   help="DOCX size in pt of the tafsir names in --combine files (default 20)")
     p.add_argument("--tafsir_bold", action=argparse.BooleanOptionalAction, default=True,
                    help="bold tafsir text in --combine DOCX files (default on; --no-tafsir_bold to disable)")
-    p.add_argument("--line_spacing", type=float, default=1.05,
-                   help="DOCX line spacing multiple (default 1.05; 1.0 = tight, 1.25 = airy)")
+    p.add_argument("--line_spacing", type=float, default=0.9,
+                   help="DOCX line spacing multiple (default 0.9; 1.0 = font's natural height, 1.25 = airy)")
     p.add_argument("--page_bg", default="F3EEE2",
                    help="hex colour for the WHOLE DOCX page background (default F3EEE2, soft "
                         "paper); use 'none' for a white page")

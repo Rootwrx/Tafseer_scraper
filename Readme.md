@@ -23,6 +23,9 @@ A Python command-line tool that downloads tafsir (Quran commentary) and related 
   - the basmala on its own line
   - honorific ligatures (such as ﵇) spelled out when the font can't draw them
   - a download-date line in the document header
+  - **collapsible sections in combined files**: in Word, collapsing a verse hides all its tafsirs, and collapsing a tafsir name hides that tafsir's text and footnotes (see [Combined Word files](#combined-word-files))
+  - **bold tafsir text and large tafsir names** in combined files (both adjustable)
+  - no stray italics: Arabic text is forced to upright in every heading level
 - **Markdown output** that works in any viewer (plain Markdown, no HTML). Verses are shown in **bold**, and poetry lines lose the stray `؎` and get a gap between the two halves (plain Markdown cannot centre or colour text; the Word output does).
 - **Extra formats**: plain text and JSON, with the same per-surah / `--merge` rule as every other format.
 - **Utilities**: list the known sources, show progress, and inspect unusual symbols in the saved data.
@@ -62,7 +65,7 @@ python tafsir_scraper.py --group tafsir --surah 53
 
 # Word output
 python tafsir_scraper.py --src ibn-katheer --surah 53 --docx
-python tafsir_scraper.py --src saadi --surah 1-3 --docx --font "Kitab" --docx_size 18
+python tafsir_scraper.py --src saadi --surah 1-3 --docx --font "Kitab" --docx_size 16
 
 # Some surahs only (one file per surah in every format, the default)
 python tafsir_scraper.py --src tadabbur-wa-amal --surah 1,23,44 --docx --txt
@@ -76,6 +79,9 @@ python tafsir_scraper.py --src tadabbur-wa-amal --surah all --docx
 # Merge several tafsirs into one file (order = order given)
 python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53 --docx
 python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --combine_only
+
+# Combined Word file with bigger tafsir names, normal-weight text and tighter lines
+python tafsir_scraper.py --combine saadi,muyassar --surah 53 --docx --tafsir_title_size 22 --no-tafsir_bold --line_spacing 0.85
 
 # Example: Al-Mulk to An-Nas, one combined Word file per surah, five tafsirs in this order, no Markdown
 python tafsir_scraper.py --combine almuyassar-ghareeb,mukhtasar,aysar-altafasir,wahidi-asbab,ibn-katheer --surah 67-114 --docx --combine_only --no-md
@@ -131,8 +137,10 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 | Option | Description |
 | --- | --- |
 | `--font` | Word font (default `Kitab`); must be installed where the file is opened |
-| `--docx_size` | Body size in pt (default 18) |
-| `--line_spacing` | Line-spacing multiple (default 1.05; 1.0 = tight, 1.25 = airy) |
+| `--docx_size` | Body size in pt (default 16). Headings, verses and footnotes scale from it |
+| `--line_spacing` | Line-spacing multiple (default 0.9; 1.0 = the font's natural line height, 1.25 = airy). Also applied to the Title and Heading 1-4 styles. If Arabic marks (tashkeel) look clipped, raise it to 1.0 |
+| `--tafsir_title_size` | Size in pt of the tafsir names in `--combine` Word files, both the heading above each tafsir and the list on the cover page (default 20) |
+| `--tafsir_bold` / `--no-tafsir_bold` | Bold tafsir body text in `--combine` Word files (on by default). Poetry lines, the basmala, separators and footnotes keep their own styling |
 | `--page_bg` | Hex colour for the whole page background (default `F3EEE2`, soft paper); `none` for a white page |
 | `--verse_color` | Hex colour for `﴿…﴾` quotations inside the tafsir text (default `0F6B9C`); `none` to disable. Used in DOCX (and in Markdown with `--md_verse_style html`) |
 | `--verse_heuristic` / `--no-verse_heuristic` | Also colour vowelled quotes inside `( )`, `« »` and `[ ]` (on by default) |
@@ -152,6 +160,19 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 | `--list_sources` | Print the known source slugs and exit |
 | `--status` | Show progress per source and exit |
 | `--debug_marks` | List unusual symbols found in the saved data (to see which quote marks the site uses) and exit |
+
+## Combined Word files
+
+In a `--combine` Word file the outline is:
+
+| Level | Content | Collapsing it hides |
+| --- | --- | --- |
+| Heading 1 | Surah name | everything in the surah |
+| Heading 2 | `الآية N` (ayah label) | the verse and all its tafsirs |
+| Verse paragraph (outline level 3) | `﴿…﴾` | all tafsirs of that ayah |
+| Heading 4 | Tafsir name, in the colour of its source | that tafsir's text and footnotes |
+
+In Word, hover over a heading or the verse line to see the collapse arrow; right-click and choose **Expand/Collapse > Collapse All Headings** to fold everything at once. Because the verse has an outline level, it also appears in the Navigation Pane. This applies to `--combine` files only; single-source Word files keep the plain Heading 1-3 structure.
 
 ## Output layout
 
