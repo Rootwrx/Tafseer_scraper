@@ -833,6 +833,7 @@ def _d_page_number_footer(doc, font: str) -> None:
 
 
 LINE_SPACING = 0.9   # set from --line_spacing
+TAFSIR_FONT = "KFGQPC Uthman Taha Naskh"   # set from --tafsir_font: tafsir names + tafsir text (verses stay in --font)
 PAGE_BG: str | None = "F3EEE2"   # set from --page_bg (None = white page)
 
 
@@ -903,14 +904,15 @@ def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_bre
                 _d_par(doc, "لا مواد لهذه الآية في هذا الكتاب", font, size - 2, color="888888")
                 continue
             def _rich(text, sz, base_color, **kw):
-                par = _d_par(doc, "", font, sz, **kw)
+                par = _d_par(doc, "", TAFSIR_FONT, sz, **kw)
                 for seg, is_verse in split_verses(text):
                     red = VERSE_COLOR if (is_verse and VERSE_COLOR) else None
-                    _d_run(par, seg, font, sz, bold=bool(red), color=red or base_color)
+                    _d_run(par, seg, font if is_verse else TAFSIR_FONT, sz,
+                           bold=bool(red), color=red or base_color)
 
             for line in body.split("\n"):
                 if is_poem_line(line):
-                    _d_par(doc, poem_text(line), font, size, color=POEM_COLOR,
+                    _d_par(doc, poem_text(line), TAFSIR_FONT, size, color=POEM_COLOR,
                            align=WD_ALIGN_PARAGRAPH.CENTER, before=4, after=4)
                 elif line.strip() in BASMALA_LINES:
                     _rich(line.strip(), size + (2 if BASMALA_MODE == "text" else 10), "C99200", align=WD_ALIGN_PARAGRAPH.LEFT,
@@ -942,7 +944,7 @@ def build_docx(out_path: Path, src: str, sections, quran, font: str, size: float
         r.text = ""
     _d_bidi(t)
     t.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _d_run(t, title, font, size + 14, True, C["title"])
+    _d_run(t, title, TAFSIR_FONT, size + 14, True, C["title"])
     if title_extra:
         _d_par(doc, title_extra, font, size + 2, color=C["surah"], align=WD_ALIGN_PARAGRAPH.CENTER)
     _d_par(doc, f"المصدر: {BASE}/{src} | تاريخ التحميل: {time.strftime('%Y-%m-%d')}",
@@ -1050,11 +1052,14 @@ def build_combined_md(order: list[str], surah: int, entries: list[dict], quran) 
     return "\n".join(out)
 
 
-def _d_rich(doc, text: str, font: str, sz: float, base_color: str, bold_text: bool = False, **kw):
+def _d_rich(doc, text: str, font: str, sz: float, base_color: str, bold_text: bool = False,
+            verse_font: str | None = None, **kw):
+    """Text in *font*; Quran quotations use *verse_font* (defaults to *font*)."""
     par = _d_par(doc, "", font, sz, **kw)
     for seg, is_verse in split_verses(text):
         red = VERSE_COLOR if (is_verse and VERSE_COLOR) else None
-        _d_run(par, seg, font, sz, bold=bool(red) or bold_text, color=red or base_color)
+        _d_run(par, seg, (verse_font or font) if is_verse else font, sz,
+               bold=bool(red) or bold_text, color=red or base_color)
     return par
 
 
@@ -1114,24 +1119,26 @@ def _d_tafsir_block(container, item, e, font: str, size: float, title_size: floa
     label = _src_label(idx, src)
     if (rec["a_start"], rec["a_end"]) != (e["a_start"], e["a_end"]):
         label += f" — الآيات {_rng(rec['a_start'], rec['a_end'])}"
-    block = [_d_heading(container, label, 4, font, title_size, SRC_FG[(idx - 1) % len(SRC_FG)])]
+    tf = TAFSIR_FONT   # tafsir name + text; verses stay in *font* (Kitab)
+    block = [_d_heading(container, label, 4, tf, title_size, SRC_FG[(idx - 1) % len(SRC_FG)])]
     for line in body.split("\n"):
         if is_poem_line(line):
-            block.append(_d_par(container, poem_text(line), font, size, color=POEM_COLOR,
+            block.append(_d_par(container, poem_text(line), tf, size, color=POEM_COLOR,
                                 align=WD_ALIGN_PARAGRAPH.CENTER, before=4, after=4))
         elif line.strip() in BASMALA_LINES:
-            block.append(_d_rich(container, line.strip(), font,
+            block.append(_d_rich(container, line.strip(), tf,
                                  size + (2 if BASMALA_MODE == "text" else 10), "C99200",
+                                 verse_font=font,
                                  align=WD_ALIGN_PARAGRAPH.LEFT, before=6, after=6))
         elif _SEP_LINE_RE.match(line.strip()):
-            block.append(_d_rich(container, line.strip(), font, size, C["sep"],
+            block.append(_d_rich(container, line.strip(), tf, size, C["sep"], verse_font=font,
                                  align=WD_ALIGN_PARAGRAPH.CENTER, before=6, after=6))
         elif line.strip():
-            block.append(_d_rich(container, line.strip(), font, size, C["ink"], bold_text=bold,
-                                 align=WD_ALIGN_PARAGRAPH.JUSTIFY))
+            block.append(_d_rich(container, line.strip(), tf, size, C["ink"], bold_text=bold,
+                                 verse_font=font, align=WD_ALIGN_PARAGRAPH.JUSTIFY))
     for i, n in enumerate(notes, 1):
-        block.append(_d_rich(container, f"({ar_nums(i)}) {n}", font, max(10, size - 4),
-                             C["note"], after=2))
+        block.append(_d_rich(container, f"({ar_nums(i)}) {n}", tf, max(10, size - 4),
+                             C["note"], verse_font=font, after=2))
     block[0].paragraph_format.space_before = Pt(10)
     block[-1].paragraph_format.space_after = Pt(10)
 
@@ -1157,7 +1164,7 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
     if title_extra:
         _d_par(doc, title_extra, font, size + 2, color=C["surah"], align=WD_ALIGN_PARAGRAPH.CENTER)
     for idx, src in enumerate(order, 1):
-        _d_par(doc, _src_label(idx, src), font, title_size, color=SRC_FG[(idx - 1) % len(SRC_FG)],
+        _d_par(doc, _src_label(idx, src), TAFSIR_FONT, title_size, color=SRC_FG[(idx - 1) % len(SRC_FG)],
                align=WD_ALIGN_PARAGRAPH.CENTER, after=0)
     _d_par(doc, f"تاريخ التحميل: {time.strftime('%Y-%m-%d')}", font, 10, color="888888",
            align=WD_ALIGN_PARAGRAPH.CENTER, before=8, after=12)
@@ -1261,6 +1268,9 @@ def main():
                    help="DOCX font (must be installed on the machine opening the file). Word has no CSS-style "
                         "fallback stack, so only the first name of a list like \"Kitab, system-ui\" is used")
     p.add_argument("--docx_size", type=float, default=16, help="DOCX body size in pt (default 16)")
+    p.add_argument("--tafsir_font", default="KFGQPC Uthman Taha Naskh",
+                   help="DOCX font for tafsir names and tafsir text (default 'KFGQPC Uthman Taha Naskh'); "
+                        "Quran verses (﴿…﴾ heading and quotations) stay in --font")
     p.add_argument("--tafsir_title_size", type=float, default=20,
                    help="DOCX size in pt of the tafsir names in --combine files (default 20)")
     p.add_argument("--tafsir_bold", action=argparse.BooleanOptionalAction, default=True,
@@ -1300,8 +1310,9 @@ def main():
     args = p.parse_args()
     args.font = args.font.split(",")[0].strip() or "Kitab"   # Word takes ONE font name, not a CSS stack
 
-    global VERSE_COLOR, VERSE_HEURISTIC, MD_VERSE_STYLE, LIGATURES, PAGE_BG, LINE_SPACING
+    global VERSE_COLOR, VERSE_HEURISTIC, MD_VERSE_STYLE, LIGATURES, PAGE_BG, LINE_SPACING, TAFSIR_FONT
     LINE_SPACING = args.line_spacing
+    TAFSIR_FONT = args.tafsir_font.split(",")[0].strip() or "KFGQPC Uthman Taha Naskh"
     PAGE_BG = None if args.page_bg.lower() in ("none", "off", "white", "") else args.page_bg.lstrip("#").upper()
     LIGATURES = args.ligatures
     MD_VERSE_STYLE = args.md_verse_style or "bold"
