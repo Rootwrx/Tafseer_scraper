@@ -464,10 +464,20 @@ def md_color_verses(text: str) -> str:
     return "".join(out)
 
 
+def md_poem(line: str) -> str:
+    """Poetry line: ؎ dropped, hemistichs separated by a gap.  Plain Markdown cannot centre or
+    colour text, so that only happens with --md_colors (inline HTML, like the DOCX output)."""
+    t = poem_text(line)
+    if MD_COLORS:
+        return f'<div align="center" style="text-align:center;color:#{POEM_COLOR}">{t}</div>'
+    return t
+
+
 def md_body(text: str) -> str:
     """One Markdown paragraph per source line (a single newline would be merged into
     one run-on paragraph by every Markdown renderer)."""
-    return "\n\n".join(md_color_verses(l.strip()) for l in text.split("\n") if l.strip())
+    return "\n\n".join(md_poem(l) if is_poem_line(l) else md_color_verses(l.strip())
+                        for l in text.split("\n") if l.strip())
 
 
 def md_note(text: str) -> str:
@@ -1172,19 +1182,20 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
         log("[!] combine: no data found for the requested sources/surahs")
         return
 
-    mds = []
-    md_dir = root / "md"
     if args.md:
-        md_dir.mkdir(parents=True, exist_ok=True)
-    for s, entries in sections:
-        md = build_combined_md(order, s, entries, quran)
-        mds.append(md)
-        if args.md:
-            (md_dir / f"{surah_file(s)}.md").write_text(md_page(md), encoding="utf-8")
-    names = "، ".join(_src_label(i, src) for i, src in enumerate(order, 1))
-    full = f"# جمع التفاسير\n\n> {names}\n\n" + "\n\n".join(mds)
-    (root / f"{stem}.md").write_text(md_page(full), encoding="utf-8")
-    log(f"  [md] saved → {root / (stem + '.md')}")
+        names = "، ".join(_src_label(i, src) for i, src in enumerate(order, 1))
+        head = f"# جمع التفاسير\n\n> {names}\n\n"
+        if args.docx_split:      # one Markdown file per surah (same layout as the DOCX files)
+            md_dir = root / "md"
+            md_dir.mkdir(parents=True, exist_ok=True)
+            for s, entries in sections:
+                md = build_combined_md(order, s, entries, quran)
+                (md_dir / f"{surah_file(s)}.md").write_text(md_page(head + md), encoding="utf-8")
+            log(f"  [md] saved → {md_dir}  ({len(sections)} surah file(s))")
+        else:                    # one Markdown file for all requested surahs
+            mds = [build_combined_md(order, s, entries, quran) for s, entries in sections]
+            (root / f"{stem}.md").write_text(md_page(head + "\n\n".join(mds)), encoding="utf-8")
+            log(f"  [md] saved → {root / (stem + '.md')}")
 
     if args.docx:
         if args.docx_split:
@@ -1231,7 +1242,8 @@ def main():
     p.add_argument("--docx", action="store_true",
                    help="Word output: one <src>.docx per source (needs python-docx)")
     p.add_argument("--docx_split", action="store_true",
-                   help="with --docx: one .docx per surah instead of one per source")
+                   help="one file per surah instead of one file for everything: .docx per surah with --docx, "
+                        "and for --combine also one .md per surah")
     p.add_argument("--font", default="Kitab",
                    help="DOCX font (must be installed on the machine opening the file). Word has no CSS-style "
                         "fallback stack, so only the first name of a list like \"Kitab, system-ui\" is used")
