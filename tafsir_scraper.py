@@ -158,17 +158,68 @@ TAFSIR_SOURCES = {
     "ibn-abi-hatim": "تفسير ابن أبي حاتم", "muqatil": "تفسير مقاتل", "qatada": "تفسير قتادة",
 }
 
-# the "علوم" tab (iraab-graphs returns HTML/graphs — pass it explicitly if you want it)
+# the "علوم" tab: غريب ومعاني / أسباب النزول / إعراب ولغة / قراءات / أحكام
 ULOOM_SOURCES = {
-    "almuyassar-ghareeb": "الميسر في الغريب", "zajjaj": "معاني الزجاج",
+    "siraaj-ghareeb": "غريب القرآن للخضيري", "almuyassar-ghareeb": "الميسر في الغريب",
+    "ghareeb-ibn-qutaybah": "غريب القرآن لابن قتيبة",
+    "altibyan-ghreeb": "غريب القرآن لابن الهائم", "zajjaj": "معاني الزجاج",
+    "nahaas-meanings": "معاني القرآن للنحاس", "farraa": "معاني القرآن للفراء",
+    "majaz-alquran": "مجاز القرآن لمعمر بن المثنى", "akhfash": "معاني القرآن للأخفش",
     "wahidi-asbab": "أسباب النزول للواحدي", "aliraab-almuyassar": "الإعراب الميسر",
     "iraab-daas": "إعراب القرآن للدعاس", "aljadwal": "الجدول في إعراب القرآن",
-    "lubab": "اللباب في علوم الكتاب", "iraab-aldarweesh": "إعراب القرآن للدرويش",
-    "mujtaba-mushkil-iraab": "مجتبى مشكل إعراب القرآن", "iraab-alnahas": "إعراب القرآن للنحاس",
-    "ayah-morph": "تحليل كلمات القرآن",
+    "aldur-almasoon": "الدر المصون للسمين الحلبي", "lubab": "اللباب في علوم الكتاب",
+    "iraab-aldarweesh": "إعراب القرآن للدرويش",
+    "mujtaba-mushkil-iraab": "مجتبى مشكل إعراب القرآن",
+    "iraab-alnahas": "إعراب القرآن للنحاس", "ayah-morph": "تحليل كلمات القرآن",
+    "tahbeer-altayseer": "تحبير التيسير لابن الجزري", "alnashir": "النشر لابن الجزري",
+    "ahkam-ibn-alarabee": "أحكام القرآن لابن العربي", "aljasas": "أحكام القرآن للجصاص",
+    "ilkia-alharrasee": "أحكام القرآن لإلكيا الهراسي",
+}
+# listed on the site but greyed-out ("disabled") or not plain text (iraab-graphs returns
+# HTML/graphs).  Not part of --group uloom, but they still get a proper Arabic title
+# if you pass them explicitly with --src.
+EXTRA_SOURCES = {
+    "iraab-graphs": "الإعراب المرسوم", "qiraat-almawsoah": "القراءات — الموسوعة القرآنية",
+    "mafateeh-alaghanee": "مفاتيح الأغاني في القراءات",
+    "ahkam-altarayfi": "أحكام القرآن للطريفي", "alikleel": "الإكليل للسيوطي",
+    "eedah-naskh-mansukh": "ناسخ القرآن ومنسوخه لمكي",
 }
 GROUPS = {"tafsir": TAFSIR_SOURCES, "uloom": ULOOM_SOURCES}
-ALL_SOURCES = {**TAFSIR_SOURCES, **ULOOM_SOURCES}
+ALL_SOURCES = {**TAFSIR_SOURCES, **ULOOM_SOURCES, **EXTRA_SOURCES}
+
+# ── external Arabic registry (sources_ar.json, next to this script / in the cwd) ──
+# {slug: {"title": "<short Arabic title>", "group": "tafsir|uloom", "enabled": true, ...}}
+# Edit that file to add a new source: it is merged into the built-in lists above.
+SOURCES_FILE = None   # set from --sources_file
+
+
+def load_source_registry(extra: str | None = None) -> int:
+    paths = [Path(__file__).resolve().with_name("sources_ar.json"), Path("sources_ar.json")]
+    if extra:
+        paths.append(Path(extra))
+    n = 0
+    for pth in paths:
+        try:
+            data = json.loads(pth.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for slug, meta in data.items():
+            title = meta.get("title") if isinstance(meta, dict) else meta
+            if not title:
+                continue
+            ALL_SOURCES[slug] = title
+            grp = meta.get("group") if isinstance(meta, dict) else None
+            if grp in GROUPS and meta.get("enabled", True) and slug not in EXTRA_SOURCES:
+                GROUPS[grp].setdefault(slug, title)
+            n += 1
+    return n
+
+
+def src_title(src: str) -> str:
+    """Arabic display name of a source (never the English slug when it is known)."""
+    return ALL_SOURCES.get(src, src)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SMALL UTILITIES
@@ -303,15 +354,32 @@ class Availability:
         return (ayah_abs_id in ks) if flag == 1 else (ayah_abs_id not in ks)
 
 
+def merge_titles(data: dict) -> dict:
+    """Write the Arabic name of every known source into sources.json ("title_ar" + group),
+    adding an entry for any source the site's file doesn't list.  The site's own fields
+    (keys / keys_flag / ...) are left untouched."""
+    if not isinstance(data, dict):
+        data = {}
+    for slug, title in ALL_SOURCES.items():
+        ent = data.get(slug)
+        if not isinstance(ent, dict):
+            ent = data[slug] = {}
+        ent["title_ar"] = title
+        grp = "tafsir" if slug in TAFSIR_SOURCES else "uloom"
+        ent.setdefault("group", grp)
+    return data
+
+
 def fetch_sources_meta(session, base: str, out_dir: Path) -> dict:
     cache = out_dir / "sources.json"
     try:
         data = get_json(session, f"{base}/sources/sources.json", {"json_rev": "1"})
-        atomic_write_json(cache, data)
-        return data
     except Exception as e:
         log(f"[!] could not fetch sources.json ({e}); using cache / no pre-filter")
-        return load_json(cache, {}) or {}
+        data = load_json(cache, {}) or {}
+    data = merge_titles(data)
+    atomic_write_json(cache, data)
+    return data
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -627,7 +695,7 @@ def surahs_stem(surahs: list[int]) -> str:
 
 
 def build_md_for_surah(src: str, surah: int, records: list[dict], quran) -> str:
-    title = ALL_SOURCES.get(src, src)
+    title = src_title(src)
     out = [f"## سورة {SUWAR[surah - 1][1]} — {title}", ""]
     for r in sorted(records, key=lambda r: r["a_start"]):
         head = quran_heading(quran, surah, r["a_start"], r["a_end"])
@@ -672,7 +740,7 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
          --merge     one file for all     -> <src>/<name>.<ext>"""
     base = out_dir / src
     stem = surahs_stem(surahs)
-    title = ALL_SOURCES.get(src, src)
+    title = src_title(src)
     sections = []
     for s in surahs:
         recs = load_records(raw_paths(out_dir, src, s)[0])
@@ -936,7 +1004,7 @@ def build_docx(out_path: Path, src: str, sections, quran, font: str, size: float
         log("  [!] python-docx not installed — DOCX skipped (pip install python-docx)")
         return
     C = _DOCX_COLORS
-    title = ALL_SOURCES.get(src, src)
+    title = src_title(src)
     doc = _docxlib.Document()
     _d_setup(doc, font, size)
 
@@ -1025,7 +1093,7 @@ def _rng(a: int, b: int) -> str:
 
 
 def _src_label(idx: int, src: str) -> str:
-    return ALL_SOURCES.get(src, src)
+    return src_title(src)
 
 
 def _see_before(idx: int, src: str, rec: dict) -> str:
@@ -1310,6 +1378,8 @@ def main():
                         "missing, so it works while downloading or after.")
     p.add_argument("--combine_only", action="store_true",
                    help="with --combine: skip the individual per-source outputs")
+    p.add_argument("--sources_file", default=None,
+                   help="extra JSON of Arabic source titles (default: sources_ar.json next to the script)")
     p.add_argument("--list_sources", action="store_true", help="list known source slugs and exit")
     p.add_argument("--status", action="store_true", help="show progress and exit")
     args = p.parse_args()
@@ -1324,11 +1394,16 @@ def main():
     VERSE_HEURISTIC = args.verse_heuristic
     VERSE_COLOR = None if args.verse_color.lower() in ("none", "off", "") else args.verse_color.lstrip("#").upper()
 
+    load_source_registry(args.sources_file)
+
     if args.list_sources:
         for grp, d in GROUPS.items():
             print(f"[{grp}]")
             for k, v in d.items():
                 print(f"  {k:24s} {v}")
+        print("[extra — disabled on the site / non-text]")
+        for k, v in EXTRA_SOURCES.items():
+            print(f"  {k:24s} {v}")
         return
 
     sources: list[str] = []
@@ -1360,6 +1435,8 @@ def main():
         return
 
     session = make_session(args.ua)
+    if args.no_prefilter:
+        atomic_write_json(out_dir / "sources.json", merge_titles(load_json(out_dir / "sources.json", {}) or {}))
     avail = Availability(None if args.no_prefilter else fetch_sources_meta(session, args.base, out_dir))
     quran = None
     if args.with_quran:
