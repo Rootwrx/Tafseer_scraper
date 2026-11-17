@@ -1264,8 +1264,8 @@ def main():
                    help="Markdown output (default on; --no-md disables it, also for --combine)")
     p.add_argument("--json", action="store_true", help="JSON output (entries with cleaned text and footnotes)")
     p.add_argument("--txt", action="store_true", help="plain-text output")
-    p.add_argument("--docx", action="store_true",
-                   help="Word output (needs python-docx)")
+    p.add_argument("--docx", action=argparse.BooleanOptionalAction, default=True,
+                   help="Word output (default on; --no-docx disables it; needs python-docx)")
     p.add_argument("--merge", action="store_true",
                    help="put all requested surahs in ONE file per format (default: one file per "
                         "surah for every format; also applies to --combine)")
