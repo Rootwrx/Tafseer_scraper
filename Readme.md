@@ -23,7 +23,7 @@ A Python command-line tool that downloads tafsir (Quran commentary) and related 
 - **Many sources, any surahs**: one source or several; one surah, a list or ranges (`1,23,44` or `1-3,53,112-114`) or the whole Quran (`all`).
 - **Offline-first and resumable**: before any request, the script looks at what is already saved on disk and requests **only the ayahs that are missing**. If nothing is missing, it makes **zero network requests** and just rebuilds the output files. The run ends with the number of requests actually made. See [Re-running, resuming and the network](#re-running-resuming-and-the-network).
 - **One file per surah by default**, for every output format (Markdown, Word, text, JSON, and combined files). Add `--merge` to get one file per format holding all requested surahs instead.
-- **Markdown and Word are on by default** (`--no-md` / `--no-docx` to skip them). JSON and text are opt-in (`--json`, `--txt`).
+- **Choose your formats explicitly**: with no format flag you get Markdown + Word. As soon as you pass any of `--md`, `--docx`, `--json` or `--txt`, **only the formats you named** are built (so `--md` alone gives no Word file until you also add `--docx`). See [Choosing formats](#choosing-formats).
 - **Parallel**: runs (source, surah) tasks on a thread pool (`--workers`, `--delay`), with automatic retry and back-off on 429 / 5xx / connection errors.
 - **Group-aware**: when the site returns one block covering several ayahs (for example 33-54), the scraper skips the ayahs already covered instead of requesting them again.
 - **Skips empty ayahs**: uses the site's `sources.json` metadata to avoid ayahs a source has no material for (turn off with `--no_prefilter`).
@@ -58,7 +58,7 @@ pip install curl_cffi python-docx
 ```
 
 - `curl_cffi` is optional (it falls back to `requests`; install `requests` if you skip it).
-- `python-docx` is only needed for Word output. Without it, the script prints one warning, disables DOCX and still builds everything else.
+- `python-docx` is only needed for Word output. Without it, the script prints one warning, disables DOCX and still builds the other formats.
 
 ### Font
 
@@ -67,7 +67,7 @@ The Word output uses the **Kitab** font by default for headings and Quran verses
 ## Quick start
 
 ```bash
-# One surah, one source (Markdown + Word, one file each)
+# One surah, one source (no format flag → Markdown + Word, one file each)
 python tafsir_scraper.py --src saadi --surah 53
 
 # Find source slugs
@@ -145,7 +145,7 @@ The two tafsirs stay separate. For each source you get one file per surah, per f
 <out_dir>/تفسير ابن كثير/raw|md|docx/…
 ```
 
-That is up to 2 × 114 × 2 = 456 output files plus the raw data. Add `--json` / `--txt` for per-surah JSON and text files too.
+That is up to 2 × 114 × 2 = 456 output files plus the raw data. To build something else, name the formats (for example `--docx` for Word only, or `--md --json`).
 
 ### Several sources, all surahs, with `--merge`
 
@@ -196,7 +196,7 @@ Details:
 - Without `--combine_only`, the individual per-source files are built too.
 - Each ayah entry starts at every ayah where at least one source begins a block. If a source has a longer block that started earlier (for example one block for ayahs 33-54), the later entry shows an italic note pointing to it instead of repeating the text, and a tafsir heading shows its ayah range when it differs from the entry's.
 - Sources with no text for a surah are left out.
-- Combined output is Markdown and Word only; `--json` / `--txt` apply to the individual per-source files.
+- Combined output is Markdown and Word only; `--json` / `--txt` apply to the individual per-source files. Name the formats you want: `--combine a,b --surah 53 --docx` builds only the combined Word file.
 
 ### Source groups
 
@@ -209,12 +209,17 @@ python tafsir_scraper.py --group tafsir --src ibn-uthaymeen --surah 53   # group
 ### Choosing formats
 
 ```bash
-python tafsir_scraper.py --src saadi --surah 53 --json --txt     # add JSON and text
-python tafsir_scraper.py --src saadi --surah 53 --no-md          # Word only
-python tafsir_scraper.py --src saadi --surah 53 --no-docx        # Markdown only
-python tafsir_scraper.py --src saadi --surah 1-9 --merge --no-md # one merged Word file
+python tafsir_scraper.py --src saadi --surah 53                  # no format flag → Markdown + Word
+python tafsir_scraper.py --src saadi --surah 53 --md             # Markdown ONLY
+python tafsir_scraper.py --src saadi --surah 53 --docx           # Word ONLY
+python tafsir_scraper.py --src saadi --surah 53 --md --docx      # both
+python tafsir_scraper.py --src saadi --surah 53 --json           # JSON ONLY
+python tafsir_scraper.py --src saadi --surah 53 --md --json --txt    # exactly these three
+python tafsir_scraper.py --src saadi --surah 1-9 --docx --merge  # one merged Word file
 python tafsir_scraper.py --src saadi --surah all --no-md --no-docx   # download only
 ```
+
+The rule: **no format flag → Markdown + Word. Any of `--md`, `--docx`, `--json`, `--txt` → only the formats you name.** `--no-md` / `--no-docx` only remove a format from the default pair (`--no-md` alone gives Word only).
 
 ### Rebuilding without downloading
 
@@ -222,7 +227,7 @@ There is no separate "build only" mode (and no `--build_only` flag): the script 
 
 ```bash
 python tafsir_scraper.py --src saadi --surah all                 # first run: downloads
-python tafsir_scraper.py --src saadi --surah all --merge --json  # second run: no network
+python tafsir_scraper.py --src saadi --surah all --merge --json  # second run: no network, JSON only
 ```
 
 ### Word appearance
@@ -235,7 +240,7 @@ python tafsir_scraper.py --src saadi --surah 53 --page_bg none --line_spacing 1.
 python tafsir_scraper.py --combine saadi,muyassar --surah 53 --tafsir_title_size 22 --tafsir_bold --line_spacing 0.85
 
 # Al-Mulk to An-Nas, one combined Word file per surah, five tafsirs in this order, no Markdown
-python tafsir_scraper.py --combine almuyassar-ghareeb,mukhtasar,aysar-altafasir,wahidi-asbab,ibn-katheer --surah 67-114 --combine_only --no-md
+python tafsir_scraper.py --combine almuyassar-ghareeb,mukhtasar,aysar-altafasir,wahidi-asbab,ibn-katheer --surah 67-114 --combine_only --docx
 ```
 
 ### Progress, force and utilities
@@ -282,10 +287,10 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 
 | Option | Description |
 | --- | --- |
-| `--md` / `--no-md` | Markdown output (on by default). `--no-md` also disables the combined Markdown files |
-| `--docx` / `--no-docx` | Word output (on by default; needs `python-docx`) |
-| `--txt` | Plain-text output |
-| `--json` | JSON output (raw fields plus cleaned `text` and `footnotes`) |
+| `--md` / `--no-md` | Markdown output. Built by default only when **no** format flag is given; if you pass any of `--md/--docx/--json/--txt`, only the named ones are built. `--no-md` removes it from the default pair (also for `--combine`) |
+| `--docx` / `--no-docx` | Word output (needs `python-docx`). Same rule as `--md` |
+| `--txt` | Plain-text output (when given, md/docx are built only if you also name them) |
+| `--json` | JSON output: raw fields plus cleaned `text` and `footnotes` (when given, md/docx are built only if you also name them) |
 | `--merge` | Put all requested surahs in **one file** per format (and per source), including `--combine`. Without it, every format gets one file per surah (the default) |
 
 **Word (DOCX) appearance**
@@ -328,9 +333,10 @@ The script checks flag combinations and tells you when something has no effect:
 | `--combine_only` without `--combine` | Error |
 | `--ayahs` with more than one surah | Error (`--ayahs` needs a single `--surah`) |
 | `--json` / `--txt` with `--combine` | Warning: only the individual per-source files get them; with `--combine_only` they are ignored |
+| `--combine` without `--md` / `--docx` (for example only `--json`) | Warning: combined files are md/docx only, so none are built |
 | `--tafsir_title_size` / `--tafsir_bold` without `--combine` | Warning: they only affect combined Word files |
 | Word output requested but `python-docx` missing | One warning, DOCX is disabled, other formats are built |
-| `--no-md --no-docx` without `--json` / `--txt` | Warning: nothing is built, the script only downloads |
+| No format enabled (for example `--no-md --no-docx`, or `--docx` without `python-docx`) | Warning: nothing is built, the script only downloads |
 | `--build_only` | Removed. Re-running the same command already rebuilds from disk without network |
 
 ## Combined Word files
@@ -385,7 +391,7 @@ tafsir_output/
 | a contiguous range | `سورة النجم إلى سورة الرحمن` |
 | anything else | `سور 1-3،53،112-114` |
 
-With `--no-md` no `.md` files are written (per source or combined). Folders created by older versions (English-slug source folders, `combined/`, Arabic-named format subfolders) are renamed automatically the first time you run the new version.
+Markdown files are only written when `--md` is given or no format flag is used at all (same for Word); `--no-md` always suppresses them, per source and combined. Folders created by older versions (English-slug source folders, `combined/`, Arabic-named format subfolders) are renamed automatically the first time you run the new version.
 
 ## Adding or renaming sources
 

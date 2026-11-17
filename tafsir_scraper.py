@@ -31,8 +31,8 @@ Output tree
 ───────────
     <out_dir>/<عنوان المصدر>/raw/surah_053.jsonl     raw records (source of truth)
     <out_dir>/<عنوان المصدر>/raw/surah_053.done      completion marker
-    <out_dir>/<عنوان المصدر>/md/سورة النجم.md        per-surah Markdown   (md + docx are ON by default;
-    <out_dir>/<عنوان المصدر>/docx/سورة النجم.docx    per-surah Word        use --no-md / --no-docx to skip)
+    <out_dir>/<عنوان المصدر>/md/سورة النجم.md        per-surah Markdown   (no format flag → md + docx;
+    <out_dir>/<عنوان المصدر>/docx/سورة النجم.docx    per-surah Word        any of --md/--docx/--json/--txt → ONLY those)
     <out_dir>/<عنوان المصدر>/json/سورة النجم.json    with --json
     <out_dir>/<عنوان المصدر>/txt/سورة النجم.txt      with --txt
     --merge → ONE file per format directly inside <out_dir>/<عنوان المصدر>/ :
@@ -845,6 +845,8 @@ def build_md_for_surah(src: str, surah: int, records: list[dict], quran) -> str:
         if notes:
             out.append("---")
             for i, n in enumerate(notes, 1):
+                if i > 1:
+                    out.append(">")   # blank quote line: each footnote is its own paragraph
                 out.append(f"> ({ar_nums(i)}) {md_note(n)}")
             out.append("")
     return "\n".join(out)
@@ -1246,6 +1248,8 @@ def build_combined_md(order: list[str], surah: int, entries: list[dict], quran) 
             out += [f"#### {label}", ""]
             out += [md_body(body), ""]
             for i, n in enumerate(notes, 1):
+                if i > 1:
+                    out.append(">")   # blank quote line: each footnote is its own paragraph
                 out.append(f"> ({ar_nums(i)}) {md_note(n)}")
             if notes:
                 out.append("")
@@ -1576,12 +1580,15 @@ def main():
     p.add_argument("--base", default=BASE, help=argparse.SUPPRESS)
     p.add_argument("--user-agent", "--ua", dest="ua", default=None)
 
-    p.add_argument("--md", action=argparse.BooleanOptionalAction, default=True,
-                   help="Markdown output (default on; --no-md disables it, also for --combine)")
+    p.add_argument("--md", action=argparse.BooleanOptionalAction, default=None,
+                   help="Markdown output. With no format flag at all, md + docx are built; as soon "
+                        "as you pass any of --md/--docx/--json/--txt, ONLY the formats you named "
+                        "are built. --no-md removes it from the default pair (also for --combine)")
     p.add_argument("--json", action="store_true", help="JSON output (entries with cleaned text and footnotes)")
     p.add_argument("--txt", action="store_true", help="plain-text output")
-    p.add_argument("--docx", action=argparse.BooleanOptionalAction, default=True,
-                   help="Word output (default on; --no-docx disables it; needs python-docx)")
+    p.add_argument("--docx", action=argparse.BooleanOptionalAction, default=None,
+                   help="Word output (needs python-docx). Same rule as --md: built by default "
+                        "only when no format flag is given; --no-docx removes it from the default pair")
     p.add_argument("--merge", action="store_true",
                    help="put all requested surahs in ONE file per format (default: one file per "
                         "surah for every format; also applies to --combine)")
@@ -1635,6 +1642,13 @@ def main():
     args = p.parse_args()
     args.font = args.font.split(",")[0].strip() or "Kitab"   # Word takes ONE font name, not a CSS stack
 
+    # ── output formats: no flag → md + docx; any positive format flag → ONLY those ──
+    if args.md or args.docx or args.json or args.txt:
+        args.md, args.docx = bool(args.md), bool(args.docx)
+    else:
+        args.md = True if args.md is None else args.md
+        args.docx = True if args.docx is None else args.docx
+
     # ── flag coherence ────────────────────────────────────────────────────
     if args.combine_only and not args.combine:
         p.error("--combine_only needs --combine SLUGS")
@@ -1650,8 +1664,10 @@ def main():
         log("[!] python-docx not installed — DOCX output disabled (pip install python-docx)")
         args.docx = False
     if not (args.md or args.docx or args.json or args.txt):
-        log("[!] no output format enabled (--no-md/--no-docx without --json/--txt): "
-            "the script will only download")
+        log("[!] no output format enabled: the script will only download "
+            "(add --md, --docx, --json or --txt to build files)")
+    if args.combine and not (args.md or args.docx):
+        log("[!] --combine files are md/docx only: add --md and/or --docx to build them")
 
     global VERSE_COLOR, VERSE_HEURISTIC, MD_VERSE_STYLE, LIGATURES, PAGE_BG, LINE_SPACING, TAFSIR_FONT
     LINE_SPACING = args.line_spacing
