@@ -4,7 +4,8 @@ A Python command-line tool that downloads tafsir (Quran commentary) and related 
 
 ## Features
 
-- **Many sources, any surah**: one source or several, one surah, a range (`1-3,53,112-114`) or the whole Quran (`all`).
+- **Many sources, any surahs**: one source or several; one surah, a list or ranges (`1,23,44` or `1-3,53,112-114`) or the whole Quran (`all`).
+- **One switch for file layout**: `--split` gives one file per surah for every output format (Markdown, Word, text, JSON, and combined files). Without it you get one file per format holding all requested surahs.
 - **Resumable**: each (source, surah) is saved as an append-only `.jsonl` file with a `.done` marker, so an interrupted run picks up where it stopped. Re-running the same command also retries any tasks that failed.
 - **Parallel**: runs (source, surah) tasks on a thread pool (`--workers`, `--delay`).
 - **Group-aware**: when the site returns one block covering several ayahs (for example 33-54), the scraper skips the ayahs already covered instead of requesting them again.
@@ -22,8 +23,8 @@ A Python command-line tool that downloads tafsir (Quran commentary) and related 
   - the basmala on its own line
   - honorific ligatures (such as ﵇) spelled out when the font can't draw them
   - a download-date line in the document header
-- **Markdown output** for any viewer, with optional coloured styling for viewers that render HTML. Poetry lines lose the stray `؎` and get a gap between the two halves; with `--md_colors` they are also centred and red (plain Markdown cannot centre or colour text).
-- **Extra formats**: per-surah plain text, one combined Markdown file per source, one combined JSON file per source.
+- **Markdown output** that works in any viewer (plain Markdown, no HTML). Verses are shown in **bold**, and poetry lines lose the stray `؎` and get a gap between the two halves (plain Markdown cannot centre or colour text; the Word output does).
+- **Extra formats**: plain text and JSON, with the same `--split` rule as every other format.
 - **Utilities**: list the known sources, show progress, and inspect unusual symbols in the saved data.
 
 ## Installation
@@ -61,20 +62,26 @@ python tafsir_scraper.py --group tafsir --surah 53
 
 # Word output
 python tafsir_scraper.py --src ibn-katheer --surah 53 --docx
-python tafsir_scraper.py --src saadi --surah 1-3 --docx --docx_split --font "Kitab" --docx_size 18
+python tafsir_scraper.py --src saadi --surah 1-3 --docx --split --font "Kitab" --docx_size 18
+
+# Some surahs only, one file per surah in every format
+python tafsir_scraper.py --src tadabbur-wa-amal --surah 1,23,44 --docx --txt --split
+
+# The whole Quran, one Word file and one Markdown file per surah
+python tafsir_scraper.py --src tadabbur-wa-amal --surah all --docx --split
 
 # Merge several tafsirs into one file (order = order given)
 python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53 --docx
-python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --docx_split --combine_only
+python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --split --combine_only
 
-# Example: Al-Mulk to An-Nas, one combined Word file per surah, five tafsirs in this order
-python tafsir_scraper.py --combine almuyassar-ghareeb,mukhtasar,aysar-altafasir,wahidi-asbab,ibn-katheer --surah 67-114 --docx --docx_split --combine_only
+# Example: Al-Mulk to An-Nas, one combined Word file per surah, five tafsirs in this order, no Markdown
+python tafsir_scraper.py --combine almuyassar-ghareeb,mukhtasar,aysar-altafasir,wahidi-asbab,ibn-katheer --surah 67-114 --docx --split --combine_only --no-md
 
 # Extras
 python tafsir_scraper.py --list_sources                        # show known source slugs
 python tafsir_scraper.py --src saadi --surah all --status      # progress only
 python tafsir_scraper.py --src saadi --surah 53 --force        # re-scrape
-python tafsir_scraper.py --src saadi --surah 53 --json --single --txt
+python tafsir_scraper.py --src saadi --surah 53 --json --txt
 python tafsir_scraper.py --src saadi --surah 53 --debug_marks  # list unusual symbols in the saved data
 ```
 
@@ -88,7 +95,7 @@ Run `python tafsir_scraper.py --help` for the full list of options.
 | --- | --- |
 | `--src` | Comma-separated source slugs (for example `saadi,muyassar`) |
 | `--group` | Add every source of a tab: `tafsir` or `uloom` |
-| `--surah` | `all`, a number, or a list/ranges such as `1-3,53` |
+| `--surah` | `all`, a number, or a list/ranges such as `1,23,44` or `1-3,53` |
 | `--ayahs` | Ayah range inside a single surah (for example `33-54`); only works with one `--surah` |
 | `--combine` | Comma-separated sources, in order, merged into one file per ayah (verse, then each tafsir). Missing sources are scraped first |
 | `--combine_only` | With `--combine`: skip the individual per-source outputs and build only the combined files |
@@ -106,16 +113,15 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 | `--no_prefilter` | Request every ayah even if `sources.json` says the source has no data for it |
 | `--user-agent`, `--ua` | Custom User-Agent string for requests |
 
-**Output formats**
+**Output formats and layout**
 
 | Option | Description |
 | --- | --- |
 | `--md` / `--no-md` | Markdown output (on by default). `--no-md` also disables the combined Markdown files |
-| `--single` | One combined Markdown file per source |
-| `--json` | One combined JSON file per source (raw fields plus cleaned `text` and `footnotes`) |
-| `--txt` | Per-surah plain-text files |
-| `--docx` | Word output, one file per source (needs `python-docx`) |
-| `--docx_split` | One file per surah instead of one file for everything. With `--docx`: one `.docx` per surah. With `--combine`: also one `.md` per surah instead of one merged `.md` |
+| `--docx` | Word output (needs `python-docx`) |
+| `--txt` | Plain-text output |
+| `--json` | JSON output (raw fields plus cleaned `text` and `footnotes`) |
+| `--split` | One file **per surah** for every format you asked for, including `--combine`. Without it, each format gets one file holding all requested surahs. (`--docx_split` still works as an alias) |
 
 **Word (DOCX) appearance**
 
@@ -125,7 +131,7 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 | `--docx_size` | Body size in pt (default 18) |
 | `--line_spacing` | Line-spacing multiple (default 1.05; 1.0 = tight, 1.25 = airy) |
 | `--page_bg` | Hex colour for the whole page background (default `F3EEE2`, soft paper); `none` for a white page |
-| `--verse_color` | Hex colour for `﴿…﴾` quotations inside the tafsir text (default `0F6B9C`); `none` to disable. Used in DOCX and Markdown |
+| `--verse_color` | Hex colour for `﴿…﴾` quotations inside the tafsir text (default `0F6B9C`); `none` to disable. Used in DOCX (and in Markdown with `--md_verse_style html`) |
 | `--verse_heuristic` / `--no-verse_heuristic` | Also colour vowelled quotes inside `( )`, `« »` and `[ ]` (on by default) |
 | `--with_quran` / `--no-with_quran` | Print the `﴿ayah﴾` heading above each entry (on by default) |
 | `--ligatures` | Honorific ligatures such as ﵇: `auto` (default) spells them out but keeps ﷺ, `expand` spells out all including ﷺ, `keep` leaves them as they are |
@@ -134,8 +140,7 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 
 | Option | Description |
 | --- | --- |
-| `--md_colors` / `--no-md_colors` | Light background card per tafsir, page colour, coloured verses and centred red poetry via inline HTML. Off by default, because viewers that don't render HTML show the raw `<div>`/`<span>` tags. Use only in a viewer that renders HTML (for example VS Code preview or Typora) |
-| `--md_verse_style` | How verses inside the tafsir are marked in Markdown: `bold` (works everywhere), `html` (coloured `<span>`, only where HTML renders) or `none`. Default: `html` while `--md_colors` is on, otherwise `bold` |
+| `--md_verse_style` | How verses inside the tafsir are marked in Markdown: `bold` (default, works everywhere), `html` (coloured `<span>`, only where HTML renders) or `none` |
 
 **Utilities**
 
@@ -147,7 +152,9 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 
 ## Output layout
 
-File names use the Arabic surah name. For several surahs the combined file name is `سورة <first> إلى سورة <last>`, and for all 114 it is `القرآن كاملا`.
+File names use the Arabic surah name. For several surahs without `--split`, the file name is `سورة <first> إلى سورة <last>` (only the surahs you asked for are inside), and for all 114 it is `القرآن كاملا`.
+
+The rule is the same for every format (`md`, `txt`, `json`, `docx`):
 
 ```
 tafsir_output/
@@ -157,25 +164,22 @@ tafsir_output/
 │   ├── raw/
 │   │   ├── surah_053.jsonl         # raw records (source of truth)
 │   │   └── surah_053.done          # completion marker
-│   ├── md/
-│   │   └── سورة النجم.md            # per-surah Markdown
-│   ├── txt/
-│   │   └── سورة النجم.txt           # with --txt
-│   ├── docx/
-│   │   └── سورة النجم.docx          # with --docx --docx_split
-│   ├── <name>.docx                 # with --docx (one file per source)
-│   ├── <name>.md                   # with --single
-│   └── <name>.json                 # with --json
-└── combined/                       # with --combine
-    ├── <name>.md                   # without --docx_split: all requested surahs in one file
-    ├── <name>.docx                 # with --docx, without --docx_split
-    ├── md/
-    │   └── سورة النجم.md            # with --docx_split: one Markdown file per surah
-    └── docx/
-        └── سورة النجم.docx          # with --docx --docx_split
-
-# With --no-md no .md files are written (per source or combined).
+│   │
+│   │   # without --split: one file per format, all surahs inside
+│   ├── <name>.md  <name>.docx  <name>.txt  <name>.json
+│   │
+│   │   # with --split: one file per surah, one folder per format
+│   ├── md/    سورة النجم.md
+│   ├── docx/  سورة النجم.docx
+│   ├── txt/   سورة النجم.txt
+│   └── json/  سورة النجم.json
+└── combined/                       # with --combine (md and docx)
+    ├── <name>.md  <name>.docx      # without --split
+    ├── md/    سورة النجم.md         # with --split
+    └── docx/  سورة النجم.docx       # with --split
 ```
+
+With `--no-md` no `.md` files are written (per source or combined).
 
 ## How it works
 
