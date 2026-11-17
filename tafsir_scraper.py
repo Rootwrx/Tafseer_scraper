@@ -1116,7 +1116,7 @@ def _d_outline(par, level: int) -> None:
 
 
 def _d_tafsir_block(container, item, e, font: str, size: float, title_size: float = 20,
-                    bold: bool = True) -> None:
+                    bold: bool = False) -> None:
     """One tafsir (title + text + footnotes) into a Document or a table cell."""
     C = _DOCX_COLORS
     idx, src, rec = item
@@ -1150,7 +1150,7 @@ def _d_tafsir_block(container, item, e, font: str, size: float, title_size: floa
 
 def build_combined_docx(out_path: Path, order: list[str], sections, quran, font: str,
                         size: float, title_extra: str = "", title_size: float = 20,
-                        bold: bool = True) -> None:
+                        bold: bool = False) -> None:
     """sections = [(surah, entries)] from combined_entries()."""
     if _docxlib is None:
         log("  [!] python-docx not installed — DOCX skipped (pip install python-docx)")
@@ -1278,8 +1278,8 @@ def main():
                         "Quran verses (﴿…﴾ heading and quotations) stay in --font")
     p.add_argument("--tafsir_title_size", type=float, default=20,
                    help="DOCX size in pt of the tafsir names in --combine files (default 20)")
-    p.add_argument("--tafsir_bold", action=argparse.BooleanOptionalAction, default=True,
-                   help="bold tafsir text in --combine DOCX files (default on; --no-tafsir_bold to disable)")
+    p.add_argument("--tafsir_bold", action=argparse.BooleanOptionalAction, default=False,
+                   help="bold tafsir text in --combine DOCX files (default off; --tafsir_bold to enable)")
     p.add_argument("--line_spacing", type=float, default=0.9,
                    help="DOCX line spacing multiple (default 0.9; 1.0 = font's natural height, 1.25 = airy)")
     p.add_argument("--page_bg", default="F3EEE2",
