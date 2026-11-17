@@ -86,6 +86,7 @@ Install:  pip install curl_cffi python-docx   (curl_cffi optional; python-docx o
 """
 
 import argparse
+import html as _html
 import json
 import re
 import sys
@@ -607,21 +608,13 @@ def split_verses(text: str) -> list[tuple[str, bool]]:
     return merged
 
 
-MD_VERSE_STYLE = "bold"   # set from --md_verse_style: bold | html | none
-
-
 def md_color_verses(text: str) -> str:
-    """Markdown has no native colour, so by default verses are **bold**.
-    'html' emits <span style="color:…"> (only renders where inline HTML is allowed)."""
-    if MD_VERSE_STYLE == "none" or not VERSE_COLOR and MD_VERSE_STYLE == "html":
-        return text
+    """Plain Markdown (--md_style plain) has no colour, so verses are **bold**."""
     out = []
     for seg, v in split_verses(text):
         if not v:
             out.append(seg)
-        elif MD_VERSE_STYLE == "html":
-            out.append(f'<span style="color:#{VERSE_COLOR}">{seg}</span>')
-        else:  # bold — keep the ** markers hugging the text so Markdown accepts them
+        else:  # keep the ** markers hugging the text so Markdown accepts them
             lead = seg[:len(seg) - len(seg.lstrip())]
             trail = seg[len(seg.rstrip()):]
             out.append(f"{lead}**{seg.strip()}**{trail}")
@@ -643,6 +636,149 @@ def md_body(text: str) -> str:
 
 def md_note(text: str) -> str:
     return md_color_verses(" ".join(text.split()))
+
+
+# ─── styled Markdown: inline HTML with the same colours / fonts / layout as the DOCX ───
+# (set from --md_style; "plain" = pure Markdown without any HTML)
+MD_STYLED = True
+MD_FONT = "Kitab"          # --font
+MD_SIZE = 16.0             # --docx_size (used as px)
+MD_TITLE_SIZE = 20.0       # --tafsir_title_size
+MD_TAFSIR_BOLD = False     # --tafsir_bold
+
+
+def _hx(text: str) -> str:
+    return _html.escape(text, quote=False)
+
+
+def _fam(name: str) -> str:
+    return "'" + name.replace("'", "") + "', serif"
+
+
+def _st(color=None, font=None, size=None, bold=None, align=None, margin=None) -> str:
+    p = []
+    if color:
+        p.append(f"color:#{color}")
+    if font:
+        p.append(f"font-family:{_fam(font)}")
+    if size:
+        p.append(f"font-size:{size:g}px")
+    if bold is not None:
+        p.append(f"font-weight:{'bold' if bold else 'normal'}")
+    if align:
+        p.append(f"text-align:{align}")
+    if margin is not None:
+        p.append(f"margin:{margin[0]}px 0 {margin[1]}px")
+    return ";".join(p)
+
+
+def _mdp(inner: str, color, font, size, bold=False, align=None, margin=None) -> str:
+    return f'<p style="{_st(color, font, size, bold, align, margin)}">{inner}</p>'
+
+
+def _mdh(level: int, text: str, color, font, size, bold: bool = True) -> str:
+    return f'{"#" * level} <span style="{_st(color, font, size, bold)}">{_hx(text)}</span>'
+
+
+def md_runs(text: str, base_color: str, sz: float) -> str:
+    """Like _d_text_runs: Quran quotations in the verse font/colour, (١)-style numbers in
+    the note colour, the rest inherits the paragraph's colour/font."""
+    out = []
+    for seg, is_verse in split_verses(text):
+        if is_verse:
+            out.append(f'<span style="{_st(VERSE_COLOR or base_color, MD_FONT, sz - VERSE_SIZE_DELTA, False)}">'
+                       f'{_hx(seg)}</span>')
+            continue
+        for part in _NUM_MARK_RE.split(seg):
+            if not part:
+                continue
+            if _NUM_MARK_RE.fullmatch(part):
+                out.append(f'<span style="color:#{_note_color()}">{_hx(part)}</span>')
+            else:
+                out.append(_hx(part))
+    return "".join(out)
+
+
+def md_styled_body(body: str, tf: str, sz: float, ink: str, bold: bool = False) -> str:
+    """Same line rules as the DOCX: poetry centred+red, basmala gold, '* * *' centred+red."""
+    C = _DOCX_COLORS
+    out = []
+    for line in body.split("\n"):
+        t = line.strip()
+        if is_poem_line(line):
+            out.append(_mdp(_hx(poem_text(line)), POEM_COLOR, tf, sz, align="center", margin=(4, 4)))
+        elif t in BASMALA_LINES:
+            bsz = sz + (2 if BASMALA_MODE == "text" else 10)
+            out.append(_mdp(md_runs(t, "C99200", bsz), "C99200", tf, bsz, margin=(6, 6)))
+        elif _SEP_LINE_RE.match(t):
+            out.append(_mdp(md_runs(t, C["sep"], sz), C["sep"], tf, sz, align="center", margin=(6, 6)))
+        elif t:
+            out.append(_mdp(md_runs(t, ink, sz), ink, tf, sz, bold=bold, align="justify"))
+    return "\n\n".join(out)
+
+
+def md_styled_notes(notes: list[str], tf: str, sz: float) -> str:
+    """Coloured rule, then «(١) text» with the number in the verse colour (as in the DOCX)."""
+    if not notes:
+        return ""
+    nc = _note_color()
+    # a plain <div> (not <hr>, which viewers decorate with their own extra line): short rule,
+    # NOTE_RULE_CM wide, at the right-hand (start) side — like the DOCX
+    rows = [f'<div style="width:{NOTE_RULE_CM:g}cm;height:0;border-top:1px solid #{nc};'
+            f'margin:8px 0 6px;margin-left:auto;margin-right:0"></div>']
+    for i, n in enumerate(notes, 1):
+        rows.append(f'<p style="{_st(_DOCX_COLORS["note"], tf, sz, False, None, (2, 2))}">'
+                    f'<span style="color:#{nc}">({ar_nums(i)}) </span>'
+                    f'{md_runs(" ".join(n.split()), _DOCX_COLORS["note"], sz)}</p>')
+    return "\n".join(rows)
+
+
+def md_cover(title: str, title_font: str, title_extra: str, lines: list[str]) -> str:
+    C = _DOCX_COLORS
+    out = [_mdp(_hx(BASMALA), "C99200", MD_FONT, MD_SIZE + 2, align="center", margin=(0, 14)),
+           f'<h1 style="{_st(C["title"], title_font, MD_SIZE + 14, True, "center")}">{_hx(title)}</h1>']
+    if title_extra:
+        out.append(_mdp(_hx(title_extra), C["surah"], MD_FONT, MD_SIZE + 2, align="center"))
+    return "\n\n".join(out + lines)
+
+
+def md_wrap(inner: str) -> str:
+    """Whole file in one RTL block with the DOCX page colour, so the dark-ink text stays
+    readable even in a dark viewer theme."""
+    style = (f"background:#{PAGE_BG or 'FFFFFF'};color:#{_DOCX_COLORS['ink']};"
+             f"{_st(font=TAFSIR_FONT, size=MD_SIZE)};line-height:{LINE_SPACING * 2:.2f};"
+             f"padding:1.2em 1.6em;border-radius:8px")
+    return f'<div dir="rtl" style="{style}">\n\n{inner}\n\n</div>\n'
+
+
+def md_single(src: str, body: str, title_extra: str, plain_prefix: str = "") -> str:
+    """Final text of a single-source .md file (cover + page wrapper when styled)."""
+    if not MD_STYLED:
+        return plain_prefix + body
+    date = _mdp(_hx(f"المصدر: {BASE}/{src} | تاريخ التحميل: {time.strftime('%Y-%m-%d')}"),
+                "888888", MD_FONT, 10, align="center", margin=(0, 12))
+    return md_wrap(md_cover(src_title(src), TAFSIR_FONT, title_extra, [date]) + "\n\n" + body)
+
+
+def md_styled_surah(src: str, surah: int, records: list[dict], quran) -> str:
+    C = _DOCX_COLORS
+    sz = MD_SIZE
+    out = [_mdh(2, f"سورة {SUWAR[surah - 1][1]}", C["surah"], MD_FONT, sz + 6), ""]
+    for r in sorted(records, key=lambda r: r["a_start"]):
+        rng = (ar_nums(r["a_start"]) if r["a_start"] == r["a_end"]
+               else f"{ar_nums(r['a_start'])}-{ar_nums(r['a_end'])}")
+        out += [_mdh(3, f"الآية {rng}", C["ayah"], MD_FONT, sz + 2, bold=False), ""]
+        head = quran_heading(quran, surah, r["a_start"], r["a_end"])
+        if head:
+            out += [_mdp(_hx(head), C["quran"], MD_FONT, sz, margin=(0, 6)), ""]
+        body, notes = clean_text(r["data"])
+        if not body:
+            out += [_mdp("لا مواد لهذه الآية في هذا الكتاب", "888888", MD_FONT, sz - 2), ""]
+            continue
+        out += [md_styled_body(body, TAFSIR_FONT, sz, C["ink"]), ""]
+        if notes:
+            out += [md_styled_notes(notes, TAFSIR_FONT, max(10, sz - 4)), ""]
+    return "\n".join(out)
 
 
 def debug_marks(out_dir: Path, sources: list[str], surahs: list[int]) -> None:
@@ -828,6 +964,8 @@ def surahs_stem(surahs: list[int]) -> str:
 
 
 def build_md_for_surah(src: str, surah: int, records: list[dict], quran) -> str:
+    if MD_STYLED:
+        return md_styled_surah(src, surah, records, quran)
     title = src_title(src)
     out = [f"## سورة {SUWAR[surah - 1][1]} — {title}", ""]
     for r in sorted(records, key=lambda r: r["a_start"]):
@@ -897,11 +1035,13 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
     if args.md:
         if not args.merge:
             for s, recs in sections:
-                target("md", "md", s).write_text(build_md_for_surah(src, s, recs, quran), encoding="utf-8")
+                text = md_single(src, build_md_for_surah(src, s, recs, quran), f"سورة {SUWAR[s - 1][1]}")
+                target("md", "md", s).write_text(text, encoding="utf-8")
         else:
             fm = f"# {title}\n\n> المصدر: {BASE}/{src}\n\n"
             body = "\n\n".join(build_md_for_surah(src, s, recs, quran) for s, recs in sections)
-            target("md", "md").write_text(fm + body, encoding="utf-8")
+            text = md_single(src, body, "" if len(sections) == 1 else stem, plain_prefix=fm)
+            target("md", "md").write_text(text, encoding="utf-8")
     if args.txt:
         if not args.merge:
             for s, recs in sections:
@@ -1232,7 +1372,44 @@ def _see_before(idx: int, src: str, rec: dict) -> str:
             f"{_rng(rec['a_start'], rec['a_end'])}")
 
 
+def md_styled_combined(order: list[str], surah: int, entries: list[dict], quran) -> str:
+    C = _DOCX_COLORS
+    sz = MD_SIZE
+    out = [_mdh(2, f"سورة {SUWAR[surah - 1][1]}", C["surah"], MD_FONT, sz + 6), ""]
+    for e in entries:
+        out += [_mdh(3, f"الآية {_rng(e['a_start'], e['a_end'])}", C["ayah"], MD_FONT, sz + 2, bold=False), ""]
+        head = quran_heading(quran, surah, e["a_start"], e["a_end"])
+        if head:
+            out += [_mdp(_hx(head), C["quran"], MD_FONT, sz, margin=(0, 6)), ""]
+        for idx, src, rec in e["items"]:
+            body, notes = clean_text(rec["data"])
+            label = _src_label(idx, src)
+            if (rec["a_start"], rec["a_end"]) != (e["a_start"], e["a_end"]):
+                label += f" — الآيات {_rng(rec['a_start'], rec['a_end'])}"
+            out += [_mdh(4, label, SRC_FG[(idx - 1) % len(SRC_FG)], TAFSIR_FONT, MD_TITLE_SIZE, bold=False), ""]
+            out += [md_styled_body(body, TAFSIR_FONT, sz, C["ink"], bold=MD_TAFSIR_BOLD), ""]
+            if notes:
+                out += [md_styled_notes(notes, TAFSIR_FONT, max(10, sz - 4)), ""]
+        for idx, src, rec in e["notes"]:
+            out += [_mdp(_hx(_see_before(idx, src, rec)), "888888", MD_FONT, max(10, sz - 4),
+                         margin=(0, 10)), ""]
+    return "\n".join(out)
+
+
+def md_combined_file(order: list[str], body: str, title_extra: str, plain_head: str) -> str:
+    """Final text of a combined .md file (cover + page wrapper when styled)."""
+    if not MD_STYLED:
+        return plain_head + body
+    names = [_mdp(_hx(_src_label(i, src)), SRC_FG[(i - 1) % len(SRC_FG)], TAFSIR_FONT, MD_TITLE_SIZE,
+                  align="center", margin=(0, 0)) for i, src in enumerate(order, 1)]
+    date = _mdp(_hx(f"تاريخ التحميل: {time.strftime('%Y-%m-%d')}"), "888888", MD_FONT, 10,
+                align="center", margin=(8, 12))
+    return md_wrap(md_cover("جمع التفاسير", MD_FONT, title_extra, names + [date]) + "\n\n" + body)
+
+
 def build_combined_md(order: list[str], surah: int, entries: list[dict], quran) -> str:
+    if MD_STYLED:
+        return md_styled_combined(order, surah, entries, quran)
     out = [f"## سورة {SUWAR[surah - 1][1]}", ""]
     for e in entries:
         out += [f"### الآية {_rng(e['a_start'], e['a_end'])}", ""]
@@ -1477,11 +1654,13 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
             md_dir = sub_dir(root, "md")
             for s, entries in sections:
                 md = build_combined_md(order, s, entries, quran)
-                (md_dir / f"{surah_file(s)}.md").write_text(head + md, encoding="utf-8")
+                text = md_combined_file(order, md, f"سورة {SUWAR[s - 1][1]}", head)
+                (md_dir / f"{surah_file(s)}.md").write_text(text, encoding="utf-8")
             log(f"  [md] saved → {md_dir}  ({len(sections)} surah file(s))")
         else:
             mds = [build_combined_md(order, s, entries, quran) for s, entries in sections]
-            (root / f"{stem}.md").write_text(head + "\n\n".join(mds), encoding="utf-8")
+            text = md_combined_file(order, "\n\n".join(mds), "" if len(sections) == 1 else stem, head)
+            (root / f"{stem}.md").write_text(text, encoding="utf-8")
             log(f"  [md] saved → {root / (stem + '.md')}")
     if args.docx:
         if not args.merge:
@@ -1608,15 +1787,16 @@ def main():
                    help="hex colour for the WHOLE DOCX page background (default F3EEE2, soft "
                         "paper); use 'none' for a white page")
     p.add_argument("--verse_color", default="0F6B9C",
-                   help="hex colour for ﴿…﴾ quotations inside the tafsir text (DOCX; Markdown only "
-                        "with --md_verse_style html). Default 0F6B9C; use 'none' to disable")
+                   help="hex colour for ﴿…﴾ quotations inside the tafsir text (DOCX and styled Markdown). "
+                        "Default 0F6B9C; use 'none' to disable")
     p.add_argument("--with_quran", action=argparse.BooleanOptionalAction, default=True,
                    help="print the ﴿ayah﴾ heading above each entry (default on; "
                         "--no-with_quran to disable)")
-    p.add_argument("--md_verse_style", choices=["bold", "html", "none"], default=None,
-                   help="how Markdown marks verses inside the tafsir: bold (works everywhere), "
-                        "html (coloured <span>, only where HTML renders), none. Default: bold. "
-                        "DOCX is always coloured.")
+    p.add_argument("--md_style", choices=["styled", "plain"], default="styled",
+                   help="styled (default): Markdown files carry the same colours, fonts, centred "
+                        "poetry, footnote rule and page background as the Word files, using inline "
+                        "HTML (renders in VS Code, Typora, browsers; GitHub strips the styles). "
+                        "plain: pure Markdown, verses in **bold**, no HTML")
     p.add_argument("--ligatures", choices=["auto", "expand", "keep"], default="auto",
                    help="honorific ligatures like ﵇ (U+FD47) that many fonts can't draw: "
                         "auto = spell them out but keep ﷺ (default), expand = spell out all "
@@ -1667,12 +1847,15 @@ def main():
     if args.combine and not (args.md or args.docx):
         log("[!] --combine files are md/docx only: add --md and/or --docx to build them")
 
-    global VERSE_COLOR, VERSE_HEURISTIC, MD_VERSE_STYLE, LIGATURES, PAGE_BG, LINE_SPACING, TAFSIR_FONT
+    global VERSE_COLOR, VERSE_HEURISTIC, LIGATURES, PAGE_BG, LINE_SPACING, TAFSIR_FONT
     LINE_SPACING = args.line_spacing
     TAFSIR_FONT = args.tafsir_font.split(",")[0].strip() or "KFGQPC Uthman Taha Naskh"
     PAGE_BG = None if args.page_bg.lower() in ("none", "off", "white", "") else args.page_bg.lstrip("#").upper()
     LIGATURES = args.ligatures
-    MD_VERSE_STYLE = args.md_verse_style or "bold"
+    global MD_STYLED, MD_FONT, MD_SIZE, MD_TITLE_SIZE, MD_TAFSIR_BOLD
+    MD_STYLED = args.md_style == "styled"
+    MD_FONT, MD_SIZE = args.font, float(args.docx_size)
+    MD_TITLE_SIZE, MD_TAFSIR_BOLD = float(args.tafsir_title_size), bool(args.tafsir_bold)
     VERSE_HEURISTIC = args.verse_heuristic
     VERSE_COLOR = None if args.verse_color.lower() in ("none", "off", "") else args.verse_color.lstrip("#").upper()
 

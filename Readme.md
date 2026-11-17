@@ -12,6 +12,7 @@ A Python command-line tool that downloads tafsir (Quran commentary) and related 
 - [Options](#options)
 - [Rules between flags](#rules-between-flags)
 - [Combined Word files](#combined-word-files)
+- [Styled Markdown](#styled-markdown)
 - [Output layout](#output-layout)
 - [Adding or renaming sources](#adding-or-renaming-sources)
 - [How it works](#how-it-works)
@@ -45,7 +46,7 @@ A Python command-line tool that downloads tafsir (Quran commentary) and related 
   - **collapsible sections in combined files**: in Word, collapsing a verse hides all its tafsirs, and collapsing a tafsir name hides that tafsir's text and footnotes (see [Combined Word files](#combined-word-files))
   - optional **bold tafsir text** and adjustable **tafsir name size** in combined files
   - no stray italics: Arabic text is forced to upright in every heading level
-- **Markdown output** that works in any viewer (plain Markdown, no HTML by default). Verses are shown in **bold**, and poetry lines lose the stray `؎` and get a gap between the two halves (plain Markdown cannot centre or colour text; the Word output does).
+- **Styled Markdown** that matches the Word files: the same colours (surah, ayah, ﴿ayah﴾ heading, verse quotations, footnote numbers, per-tafsir colours), the same fonts (`--font` for headings and verses, `--tafsir_font` for tafsir text), centred red poetry, centred `* * *` separators, the gold basmala, a coloured footnote rule, a cover block and the paper-colour page background. It is written as inline HTML inside the `.md`, so it needs a viewer that renders HTML (VS Code preview, Typora, browsers). Use `--md_style plain` for pure Markdown without any HTML. See [Styled Markdown](#styled-markdown).
 - **Extra formats**: plain text and JSON, with the same per-surah / `--merge` rule as every other format.
 - **Utilities**: list the known sources, show progress (from disk, no network), and inspect unusual symbols in the saved data.
 
@@ -304,16 +305,16 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 | `--tafsir_title_size` | `--combine` only: size in pt of the tafsir names, both the heading above each tafsir and the list on the cover page (default 20) |
 | `--tafsir_bold` / `--no-tafsir_bold` | `--combine` only: bold tafsir body text in Word files (**off** by default). Poetry lines, the basmala, separators and footnotes keep their own styling |
 | `--page_bg` | Hex colour for the whole page background (default `F3EEE2`, soft paper); `none` for a white page |
-| `--verse_color` | Hex colour for `﴿…﴾` quotations inside the tafsir text (default `0F6B9C`); `none` to disable. Used in DOCX, and in Markdown only with `--md_verse_style html` |
+| `--verse_color` | Hex colour for `﴿…﴾` quotations inside the tafsir text (default `0F6B9C`); `none` to disable. Used in DOCX and styled Markdown |
 | `--verse_heuristic` / `--no-verse_heuristic` | Also colour vowelled quotes inside `( )`, `« »` and `[ ]` (on by default) |
 | `--with_quran` / `--no-with_quran` | Print the `﴿ayah﴾` heading above each entry (on by default). Turning it off also avoids downloading `quran.json` |
 | `--ligatures` | Honorific ligatures such as ﵇: `auto` (default) spells them out but keeps ﷺ, `expand` spells out all including ﷺ, `keep` leaves them as they are |
 
-**Markdown appearance**
+**Markdown appearance** (the Word appearance options above also drive styled Markdown: `--font`, `--tafsir_font`, `--docx_size`, `--line_spacing`, `--page_bg`, `--verse_color`, `--verse_heuristic`, `--with_quran`, `--ligatures`, and for `--combine` also `--tafsir_title_size` and `--tafsir_bold`)
 
 | Option | Description |
 | --- | --- |
-| `--md_verse_style` | How verses inside the tafsir are marked in Markdown: `bold` (default, works everywhere), `html` (coloured `<span>`, only where HTML renders) or `none` |
+| `--md_style` | `styled` (default): colours, fonts, centred poetry, footnote rule and page background like the Word files, as inline HTML. `plain`: pure Markdown without HTML (verses in **bold**, one footnote per line) |
 
 **Utilities**
 
@@ -336,6 +337,7 @@ The script checks flag combinations and tells you when something has no effect:
 | `--combine` without `--md` / `--docx` (for example only `--json`) | Warning: combined files are md/docx only, so none are built |
 | `--tafsir_title_size` / `--tafsir_bold` without `--combine` | Warning: they only affect combined Word files |
 | Word output requested but `python-docx` missing | One warning, DOCX is disabled, other formats are built |
+| `--md_style plain` with colour/font options | Those options (`--font`, `--page_bg`, `--verse_color`, …) only affect Word and styled Markdown |
 | No format enabled (for example `--no-md --no-docx`, or `--docx` without `python-docx`) | Warning: nothing is built, the script only downloads |
 | `--build_only` | Removed. Re-running the same command already rebuilds from disk without network |
 
@@ -351,6 +353,31 @@ In a `--combine` Word file the outline is:
 | Heading 4 | Tafsir name, in the colour of its source | that tafsir's text and footnotes |
 
 In Word, hover over a heading or the verse line to see the collapse arrow; right-click and choose **Expand/Collapse > Collapse All Headings** to fold everything at once. Because the verse has an outline level, it also appears in the Navigation Pane. This applies to `--combine` files only; single-source Word files keep the plain Heading 1-3 structure.
+
+## Styled Markdown
+
+By default (`--md_style styled`) every `.md` file looks like its Word counterpart:
+
+| Element | Markdown styling |
+| --- | --- |
+| Whole file | One RTL block with the `--page_bg` colour and `--tafsir_font`, so the dark text stays readable even in a dark viewer theme (`--page_bg none` = white) |
+| Cover | Basmala (gold), source title, surah name, source link and download date; for `--combine`, the list of tafsirs in their own colours |
+| Surah / ayah headings | Real Markdown headings (`##`, `###`) with the Word colours and `--font`, so the outline still works |
+| `﴿ayah﴾` heading | Green, in `--font` |
+| Tafsir text | Dark ink, in `--tafsir_font`, justified |
+| Quran quotations inside the text | `--verse_color`, in `--font`, slightly smaller |
+| Footnote numbers `(١)` | Verse colour, in the text and in the notes |
+| Poetry lines | Centred, red, without the stray `؎` |
+| `* * *` separators | Centred, red |
+| Footnotes | A short coloured rule (same length as in Word, at the right-hand side), then one small grey paragraph per note |
+| `--combine` tafsir names | Heading level 4 in the colour of its source, `--tafsir_title_size`, optional bold text with `--tafsir_bold` |
+
+Notes:
+
+- The styling is inline HTML inside the Markdown, so it shows in VS Code's preview, Typora, Obsidian (reading view) and browsers. **GitHub and some other sites strip inline styles**; use `--md_style plain` there.
+- Fonts are not embedded: `Kitab` and `KFGQPC Uthman Taha Naskh` must be installed on the machine that views the file, otherwise the viewer falls back to a serif font.
+- Sizes use the same numbers as the Word files, in pixels (`--docx_size 16` = 16 px body, headings +6 / +2, quotations −2).
+- Headings contain a `<span>`, so some outline panels may show the raw tag text; the headings themselves render correctly.
 
 ## Output layout
 
