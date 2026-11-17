@@ -24,14 +24,14 @@ Design (mirrors the Shamela scraper)
 
 Output tree
 ───────────
-    <out_dir>/<عنوان المصدر>/البيانات_الخام/surah_053.jsonl   raw records (source of truth)
-    <out_dir>/<عنوان المصدر>/البيانات_الخام/surah_053.done    completion marker
-    <out_dir>/<عنوان المصدر>/ماركداون/053_النجم.md            per-surah Markdown
-    <out_dir>/<عنوان المصدر>/جيسون/053_النجم.json             with --json
-    <out_dir>/<عنوان المصدر>/وورد/053_النجم.docx              with --docx (one file per surah;
-                                                              one merged file with --merge)
-    <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/وورد/053_النجم.docx   with --combine
-    (old English-named folders are renamed to the Arabic ones automatically)
+    <out_dir>/<عنوان المصدر>/raw/surah_053.jsonl     raw records (source of truth)
+    <out_dir>/<عنوان المصدر>/raw/surah_053.done      completion marker
+    <out_dir>/<عنوان المصدر>/md/053_النجم.md         per-surah Markdown
+    <out_dir>/<عنوان المصدر>/json/053_النجم.json     with --json
+    <out_dir>/<عنوان المصدر>/docx/053_النجم.docx     with --docx (one file per surah;
+                                                     one merged file with --merge)
+    <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/docx/سورة النجم.docx   with --combine
+    (old <slug>/ folders are renamed to the Arabic source title automatically)
     <out_dir>/quran.json                    (cached; used for ﴿ayah﴾ headings)
 
 Usage
@@ -59,7 +59,7 @@ Usage
     #   per ayah: ﴿verse﴾ → saadi → ibn-alqayyim → …
     python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53 --docx
     python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --combine_only
-    #   → <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/ماركداون|وورد/سورة النجم.md|.docx
+    #   → <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/md|docx/سورة النجم.md|.docx
 
     # extras
     python tafsir_scraper.py --src saadi --surah 53 --json --txt
@@ -224,13 +224,14 @@ def src_title(src: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# OUTPUT FOLDERS  (all Arabic; old English-named folders are renamed automatically)
+# OUTPUT FOLDERS  (source / combination folders in Arabic; raw, md, docx, txt, json stay English)
 # ═══════════════════════════════════════════════════════════════════════════
 
 COMBINED_DIR = "جمع_التفاسير"
-RAW_DIR = "البيانات_الخام"
-FMT_DIR = {"md": "ماركداون", "docx": "وورد", "txt": "نصوص", "json": "جيسون"}
-_LEGACY_FMT_DIR = {"raw": RAW_DIR, "combined": COMBINED_DIR, **FMT_DIR}
+# technical sub-folders stay in English (raw / md / docx / txt / json); the Arabic names
+# below are only recognised so folders created by an earlier version are renamed back.
+_AR_SUBDIR = {"raw": "البيانات_الخام", "md": "ماركداون", "docx": "وورد",
+              "txt": "نصوص", "json": "جيسون"}
 _fs_lock = threading.Lock()
 
 
@@ -264,9 +265,8 @@ def src_dir(out_dir: Path, src: str) -> Path:
 
 
 def sub_dir(parent: Path, key: str) -> Path:
-    """parent/<Arabic name of 'raw' | 'md' | 'docx' | 'txt' | 'json'>  (migrates the old name)."""
-    new = parent / _LEGACY_FMT_DIR.get(key, key)
-    d = _adopt(parent / key, new)
+    """parent/<raw | md | docx | txt | json>  (renames an Arabic-named one from an older version)."""
+    d = _adopt(parent / _AR_SUBDIR[key], parent / key) if key in _AR_SUBDIR else parent / key
     d.mkdir(parents=True, exist_ok=True)
     return d
 
