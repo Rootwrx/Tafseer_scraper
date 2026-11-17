@@ -1045,11 +1045,11 @@ def build_combined_md(order: list[str], surah: int, entries: list[dict], quran) 
     return "\n".join(out)
 
 
-def _d_rich(doc, text: str, font: str, sz: float, base_color: str, **kw):
+def _d_rich(doc, text: str, font: str, sz: float, base_color: str, bold_text: bool = False, **kw):
     par = _d_par(doc, "", font, sz, **kw)
     for seg, is_verse in split_verses(text):
         red = VERSE_COLOR if (is_verse and VERSE_COLOR) else None
-        _d_run(par, seg, font, sz, bold=bool(red), color=red or base_color)
+        _d_run(par, seg, font, sz, bold=bool(red) or bold_text, color=red or base_color)
     return par
 
 
@@ -1089,7 +1089,8 @@ def _d_shade(par, fill: str) -> None:
         "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi", *_PPR_AFTER_BIDI)
 
 
-def _d_tafsir_block(container, item, e, font: str, size: float) -> None:
+def _d_tafsir_block(container, item, e, font: str, size: float, title_size: float = 22,
+                    bold: bool = True) -> None:
     """One tafsir (title + text + footnotes) into a Document or a table cell."""
     C = _DOCX_COLORS
     idx, src, rec = item
@@ -1097,7 +1098,7 @@ def _d_tafsir_block(container, item, e, font: str, size: float) -> None:
     label = _src_label(idx, src)
     if (rec["a_start"], rec["a_end"]) != (e["a_start"], e["a_end"]):
         label += f" — الآيات {_rng(rec['a_start'], rec['a_end'])}"
-    block = [_d_heading(container, label, 3, font, size + 1, SRC_FG[(idx - 1) % len(SRC_FG)])]
+    block = [_d_heading(container, label, 3, font, title_size, SRC_FG[(idx - 1) % len(SRC_FG)])]
     for line in body.split("\n"):
         if is_poem_line(line):
             block.append(_d_par(container, poem_text(line), font, size, color=POEM_COLOR,
@@ -1110,7 +1111,7 @@ def _d_tafsir_block(container, item, e, font: str, size: float) -> None:
             block.append(_d_rich(container, line.strip(), font, size, C["sep"],
                                  align=WD_ALIGN_PARAGRAPH.CENTER, before=6, after=6))
         elif line.strip():
-            block.append(_d_rich(container, line.strip(), font, size, C["ink"],
+            block.append(_d_rich(container, line.strip(), font, size, C["ink"], bold_text=bold,
                                  align=WD_ALIGN_PARAGRAPH.JUSTIFY))
     for i, n in enumerate(notes, 1):
         block.append(_d_rich(container, f"({ar_nums(i)}) {n}", font, max(10, size - 4),
@@ -1120,7 +1121,8 @@ def _d_tafsir_block(container, item, e, font: str, size: float) -> None:
 
 
 def build_combined_docx(out_path: Path, order: list[str], sections, quran, font: str,
-                        size: float, title_extra: str = "") -> None:
+                        size: float, title_extra: str = "", title_size: float = 22,
+                        bold: bool = True) -> None:
     """sections = [(surah, entries)] from combined_entries()."""
     if _docxlib is None:
         log("  [!] python-docx not installed — DOCX skipped (pip install python-docx)")
@@ -1139,7 +1141,7 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
     if title_extra:
         _d_par(doc, title_extra, font, size + 2, color=C["surah"], align=WD_ALIGN_PARAGRAPH.CENTER)
     for idx, src in enumerate(order, 1):
-        _d_par(doc, _src_label(idx, src), font, size - 2, color=SRC_FG[(idx - 1) % len(SRC_FG)],
+        _d_par(doc, _src_label(idx, src), font, title_size, color=SRC_FG[(idx - 1) % len(SRC_FG)],
                align=WD_ALIGN_PARAGRAPH.CENTER, after=0)
     _d_par(doc, f"تاريخ التحميل: {time.strftime('%Y-%m-%d')}", font, 10, color="888888",
            align=WD_ALIGN_PARAGRAPH.CENTER, before=8, after=12)
@@ -1153,7 +1155,7 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
             if head:
                 _d_par(doc, head, font, size + 4, bold=True, color=C["quran"], after=6)
             for it in e["items"]:
-                _d_tafsir_block(doc, it, e, font, size)
+                _d_tafsir_block(doc, it, e, font, size, title_size, bold)
             for idx, src, rec in e["notes"]:
                 _d_par(doc, _see_before(idx, src, rec), font, max(10, size - 4),
                        color="888888", after=10)
@@ -1196,10 +1198,13 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
             for s, entries in sections:
                 build_combined_docx(d / f"{surah_file(s)}.docx", order, [(s, entries)],
                                     quran, args.font, args.docx_size,
-                                    title_extra=f"سورة {SUWAR[s - 1][1]}")
+                                    title_extra=f"سورة {SUWAR[s - 1][1]}",
+                                    title_size=args.tafsir_title_size,
+                                    bold=args.tafsir_bold)
         else:
             build_combined_docx(root / f"{stem}.docx", order, sections, quran,
-                                args.font, args.docx_size)
+                                args.font, args.docx_size, title_size=args.tafsir_title_size,
+                                bold=args.tafsir_bold)
 
 
 def print_status(out_dir: Path, sources: list[str], surahs: list[int]) -> None:
@@ -1239,6 +1244,10 @@ def main():
                    help="DOCX font (must be installed on the machine opening the file). Word has no CSS-style "
                         "fallback stack, so only the first name of a list like \"Kitab, system-ui\" is used")
     p.add_argument("--docx_size", type=float, default=18, help="DOCX body size in pt")
+    p.add_argument("--tafsir_title_size", type=float, default=22,
+                   help="DOCX size in pt of the tafsir names in --combine files (default 22)")
+    p.add_argument("--tafsir_bold", action=argparse.BooleanOptionalAction, default=True,
+                   help="bold tafsir text in --combine DOCX files (default on; --no-tafsir_bold to disable)")
     p.add_argument("--line_spacing", type=float, default=1.05,
                    help="DOCX line spacing multiple (default 1.05; 1.0 = tight, 1.25 = airy)")
     p.add_argument("--page_bg", default="F3EEE2",
