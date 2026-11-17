@@ -808,6 +808,8 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
         uniq = {(r["a_start"], r["a_end"]): r for r in recs}
         sections.append((s, sorted(uniq.values(), key=lambda r: r["a_start"])))
     if not sections:
+        log(f"  [!] {title}: no data saved for surah {stem} — this source has no material "
+            f"for it, so no files were built")
         return
 
     def target(fmt: str, ext: str, s: int | None = None) -> Path:
@@ -1033,11 +1035,7 @@ def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_bre
                 continue
             def _rich(text, sz, base_color, **kw):
                 par = _d_par(doc, "", TAFSIR_FONT, sz, **kw)
-                for seg, is_verse in split_verses(text):
-                    red = VERSE_COLOR if (is_verse and VERSE_COLOR) else None
-                    _d_run(par, seg, font if is_verse else TAFSIR_FONT,
-                           sz - VERSE_SIZE_DELTA if is_verse else sz,
-                           bold=False, color=red or base_color)
+                _d_text_runs(par, text, TAFSIR_FONT, font, sz, base_color)
 
             for line in body.split("\n"):
                 if is_poem_line(line):
@@ -1051,8 +1049,7 @@ def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_bre
                           before=6, after=6)
                 elif line.strip():
                     _rich(line.strip(), size, C["ink"], align=WD_ALIGN_PARAGRAPH.JUSTIFY)
-            for i, n in enumerate(notes, 1):
-                _rich(f"({ar_nums(i)}) {n}", max(10, size - 4), C["note"], after=2)
+            _d_notes(doc, notes, TAFSIR_FONT, font, max(10, size - 4))
 
 
 def build_docx(out_path: Path, src: str, sections, quran, font: str, size: float,
@@ -1181,16 +1178,82 @@ def build_combined_md(order: list[str], surah: int, entries: list[dict], quran) 
     return "\n".join(out)
 
 
+_NUM_MARK_RE = re.compile(r"(\(\s*[\d٠-٩]+\s*\))")   # (١)  (٢)  (12) ... footnote marks & numbering
+
+
+def _d_text_runs(par, text: str, text_font: str, verse_font: str, sz: float, base_color: str,
+                 bold: bool = False) -> None:
+    """Add *text* to *par*: Quran quotations in the verse font/colour, and every (١)-style
+    number in the verse colour too; everything else in *base_color*."""
+    for seg, is_verse in split_verses(text):
+        if is_verse:
+            _d_run(par, seg, verse_font, sz - VERSE_SIZE_DELTA, bold=False,
+                   color=VERSE_COLOR or base_color)
+            continue
+        for part in _NUM_MARK_RE.split(seg):
+            if not part:
+                continue
+            is_num = bool(_NUM_MARK_RE.fullmatch(part))
+            _d_run(par, part, text_font, sz, bold=bold,
+                   color=_note_color() if is_num else base_color)
+
+
 def _d_rich(doc, text: str, font: str, sz: float, base_color: str, bold_text: bool = False,
             verse_font: str | None = None, **kw):
     """Text in *font*; Quran quotations use *verse_font* (defaults to *font*)."""
     par = _d_par(doc, "", font, sz, **kw)
-    for seg, is_verse in split_verses(text):
-        red = VERSE_COLOR if (is_verse and VERSE_COLOR) else None
-        _d_run(par, seg, (verse_font or font) if is_verse else font,
-               sz - VERSE_SIZE_DELTA if is_verse else sz,
-               bold=False if is_verse else bold_text, color=red or base_color)
+    _d_text_runs(par, text, font, verse_font or font, sz, base_color, bold_text)
     return par
+
+
+NOTE_RULE_CM = 6.0     # length of the line above the footnotes
+NOTE_RULE_SIDE = "end"   # logical end side (= left in RTL) is indented, so the line stays at the right
+
+
+def _note_color() -> str:
+    """Footnote numbers + the line above them use the verse colour (blue by default)."""
+    return VERSE_COLOR or "0F6B9C"
+
+
+def _d_note_rule(container):
+    """Short coloured line above the footnotes, at the right-hand (start) side like in printed books."""
+    par = _d_par(container, "", TAFSIR_FONT, 4, before=8, after=4)
+    ppr = par._p.get_or_add_pPr()
+    bdr = OxmlElement("w:pBdr")
+    b = OxmlElement("w:bottom")
+    b.set(qn("w:val"), "single")
+    b.set(qn("w:sz"), "8")
+    b.set(qn("w:space"), "1")
+    b.set(qn("w:color"), _note_color())
+    bdr.append(b)
+    ppr.insert_element_before(
+        bdr, "w:shd", "w:tabs", "w:suppressAutoHyphens", "w:kinsoku", "w:wordWrap",
+        "w:overflowPunct", "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi",
+        *_PPR_AFTER_BIDI)
+    # indent from the far (left) side so only NOTE_RULE_CM of the text width is underlined
+    text_w = 21.0 - 2 * 1.8
+    ind = OxmlElement("w:ind")
+    ind.set(qn(f"w:{NOTE_RULE_SIDE}"), str(int((text_w - NOTE_RULE_CM) / 2.54 * 1440)))
+    for old in ppr.findall(qn("w:ind")):
+        ppr.remove(old)
+    ppr.insert_element_before(ind, "w:contextualSpacing", "w:mirrorIndents", "w:suppressOverlap",
+                              "w:jc", "w:textDirection", "w:textAlignment", "w:textboxTightWrap",
+                              "w:outlineLvl", "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr",
+                              "w:pPrChange")
+    return par
+
+
+def _d_notes(container, notes: list[str], text_font: str, verse_font: str, sz: float) -> list:
+    """Footnotes: a coloured rule, then «(١) text» with the number in the verse colour."""
+    if not notes:
+        return []
+    out = [_d_note_rule(container)]
+    for i, n in enumerate(notes, 1):
+        par = _d_par(container, "", text_font, sz, after=2)
+        _d_run(par, f"({ar_nums(i)}) ", text_font, sz, color=_note_color())
+        _d_text_runs(par, n, text_font, verse_font, sz, _DOCX_COLORS["note"])
+        out.append(par)
+    return out
 
 
 # light background per tafsir (cycled in --combine order)
@@ -1267,9 +1330,7 @@ def _d_tafsir_block(container, item, e, font: str, size: float, title_size: floa
         elif line.strip():
             block.append(_d_rich(container, line.strip(), tf, size, C["ink"], bold_text=bold,
                                  verse_font=font, align=WD_ALIGN_PARAGRAPH.JUSTIFY))
-    for i, n in enumerate(notes, 1):
-        block.append(_d_rich(container, f"({ar_nums(i)}) {n}", tf, max(10, size - 4),
-                             C["note"], verse_font=font, after=2))
+    block.extend(_d_notes(container, notes, tf, font, max(10, size - 4)))
     block[0].paragraph_format.space_before = Pt(10)
     block[-1].paragraph_format.space_after = Pt(10)
 
