@@ -747,6 +747,7 @@ _RPR_AFTER_BCS = (
     "w:specVanish", "w:oMath",
 )
 _RPR_AFTER_SZCS = _RPR_AFTER_BCS[_RPR_AFTER_BCS.index("w:szCs") + 1:]
+_RPR_AFTER_ICS = _RPR_AFTER_BCS[_RPR_AFTER_BCS.index("w:iCs") + 1:]
 
 
 def _d_bidi(par) -> None:
@@ -776,6 +777,9 @@ def _d_run(par, text: str, font: str, size: float, bold=False, color: str | None
     if not bold:
         bcs.set(qn("w:val"), "0")
     rpr.insert_element_before(bcs, *_RPR_AFTER_BCS)
+    ics = OxmlElement("w:iCs")                        # Arabic italics come from iCs (Heading 4 style is italic)
+    ics.set(qn("w:val"), "0")
+    rpr.insert_element_before(ics, *_RPR_AFTER_ICS)
     if color:
         r.font.color.rgb = RGBColor.from_string(color)
     return r
@@ -1089,6 +1093,17 @@ def _d_shade(par, fill: str) -> None:
         "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN", "w:bidi", *_PPR_AFTER_BIDI)
 
 
+def _d_outline(par, level: int) -> None:
+    """Give a normal paragraph an outline level (0 = level 1) so Word shows a collapse arrow
+    on it and hides everything below it, up to the next paragraph of the same/higher level."""
+    ppr = par._p.get_or_add_pPr()
+    for old in ppr.findall(qn("w:outlineLvl")):
+        ppr.remove(old)
+    el = OxmlElement("w:outlineLvl")
+    el.set(qn("w:val"), str(level))
+    ppr.insert_element_before(el, "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr", "w:pPrChange")
+
+
 def _d_tafsir_block(container, item, e, font: str, size: float, title_size: float = 22,
                     bold: bool = True) -> None:
     """One tafsir (title + text + footnotes) into a Document or a table cell."""
@@ -1098,7 +1113,7 @@ def _d_tafsir_block(container, item, e, font: str, size: float, title_size: floa
     label = _src_label(idx, src)
     if (rec["a_start"], rec["a_end"]) != (e["a_start"], e["a_end"]):
         label += f" — الآيات {_rng(rec['a_start'], rec['a_end'])}"
-    block = [_d_heading(container, label, 3, font, title_size, SRC_FG[(idx - 1) % len(SRC_FG)])]
+    block = [_d_heading(container, label, 4, font, title_size, SRC_FG[(idx - 1) % len(SRC_FG)])]
     for line in body.split("\n"):
         if is_poem_line(line):
             block.append(_d_par(container, poem_text(line), font, size, color=POEM_COLOR,
@@ -1153,7 +1168,8 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
             _d_heading(doc, f"الآية {_rng(e['a_start'], e['a_end'])}", 2, font, size + 2, C["ayah"])
             head = quran_heading(quran, s, e["a_start"], e["a_end"])
             if head:
-                _d_par(doc, head, font, size + 4, bold=True, color=C["quran"], after=6)
+                vp = _d_par(doc, head, font, size + 4, bold=True, color=C["quran"], after=6)
+                _d_outline(vp, 2)   # collapsible: hides all tafsirs of this ayah
             for it in e["items"]:
                 _d_tafsir_block(doc, it, e, font, size, title_size, bold)
             for idx, src, rec in e["notes"]:
