@@ -833,6 +833,7 @@ def _d_page_number_footer(doc, font: str) -> None:
 
 
 LINE_SPACING = 0.9   # set from --line_spacing
+VERSE_SIZE_DELTA = 2   # pt smaller than the tafsir text for verse quotations inside it (0 = same size)
 TAFSIR_FONT = "KFGQPC Uthman Taha Naskh"   # set from --tafsir_font: tafsir names + tafsir text (verses stay in --font)
 PAGE_BG: str | None = "F3EEE2"   # set from --page_bg (None = white page)
 
@@ -898,7 +899,7 @@ def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_bre
             _d_heading(doc, f"الآية {rng}", 2, font, size + 2, C["ayah"])
             head = quran_heading(quran, s, r["a_start"], r["a_end"])
             if head:
-                _d_par(doc, head, font, size + 4, bold=True, color=C["quran"], after=6)
+                _d_par(doc, head, font, size, bold=False, color=C["quran"], after=6)
             body, notes = clean_text(r["data"])
             if not body:
                 _d_par(doc, "لا مواد لهذه الآية في هذا الكتاب", font, size - 2, color="888888")
@@ -907,8 +908,9 @@ def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_bre
                 par = _d_par(doc, "", TAFSIR_FONT, sz, **kw)
                 for seg, is_verse in split_verses(text):
                     red = VERSE_COLOR if (is_verse and VERSE_COLOR) else None
-                    _d_run(par, seg, font if is_verse else TAFSIR_FONT, sz,
-                           bold=bool(red), color=red or base_color)
+                    _d_run(par, seg, font if is_verse else TAFSIR_FONT,
+                           sz - VERSE_SIZE_DELTA if is_verse else sz,
+                           bold=False, color=red or base_color)
 
             for line in body.split("\n"):
                 if is_poem_line(line):
@@ -1058,8 +1060,9 @@ def _d_rich(doc, text: str, font: str, sz: float, base_color: str, bold_text: bo
     par = _d_par(doc, "", font, sz, **kw)
     for seg, is_verse in split_verses(text):
         red = VERSE_COLOR if (is_verse and VERSE_COLOR) else None
-        _d_run(par, seg, (verse_font or font) if is_verse else font, sz,
-               bold=bool(red) or bold_text, color=red or base_color)
+        _d_run(par, seg, (verse_font or font) if is_verse else font,
+               sz - VERSE_SIZE_DELTA if is_verse else sz,
+               bold=False if is_verse else bold_text, color=red or base_color)
     return par
 
 
@@ -1176,7 +1179,7 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
             _d_heading(doc, f"الآية {_rng(e['a_start'], e['a_end'])}", 2, font, size + 2, C["ayah"])
             head = quran_heading(quran, s, e["a_start"], e["a_end"])
             if head:
-                vp = _d_par(doc, head, font, size + 2, bold=True, color=C["quran"], after=6)
+                vp = _d_par(doc, head, font, size, bold=False, color=C["quran"], after=6)
                 _d_outline(vp, 2)   # collapsible: hides all tafsirs of this ayah
             for it in e["items"]:
                 _d_tafsir_block(doc, it, e, font, size, title_size, bold)
