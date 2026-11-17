@@ -845,9 +845,8 @@ def build_md_for_surah(src: str, surah: int, records: list[dict], quran) -> str:
         if notes:
             out.append("---")
             for i, n in enumerate(notes, 1):
-                if i > 1:
-                    out.append(">")   # blank quote line: each footnote is its own paragraph
-                out.append(f"> ({ar_nums(i)}) {md_note(n)}")
+                # two trailing spaces = hard line break: one footnote per line, no paragraph gap
+                out.append(f"> ({ar_nums(i)}) {md_note(n)}" + ("  " if i < len(notes) else ""))
             out.append("")
     return "\n".join(out)
 
@@ -1248,9 +1247,8 @@ def build_combined_md(order: list[str], surah: int, entries: list[dict], quran) 
             out += [f"#### {label}", ""]
             out += [md_body(body), ""]
             for i, n in enumerate(notes, 1):
-                if i > 1:
-                    out.append(">")   # blank quote line: each footnote is its own paragraph
-                out.append(f"> ({ar_nums(i)}) {md_note(n)}")
+                # two trailing spaces = hard line break: one footnote per line, no paragraph gap
+                out.append(f"> ({ar_nums(i)}) {md_note(n)}" + ("  " if i < len(notes) else ""))
             if notes:
                 out.append("")
         for idx, src, rec in e["notes"]:
