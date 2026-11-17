@@ -863,7 +863,9 @@ def _d_setup(doc, font: str, size: float) -> None:
     _d_page_bg(doc, PAGE_BG)
     sec = doc.sections[0]
     sec.page_width, sec.page_height = Cm(21.0), Cm(29.7)
-    sec.top_margin = sec.bottom_margin = Cm(1.8)
+    sec.top_margin = Cm(1.8)
+    sec.bottom_margin = Cm(1.3)      # smaller bottom margin = more lines per page
+    sec.footer_distance = Cm(0.5)    # page number sits close to the bottom edge
     sec.left_margin = sec.right_margin = Cm(1.8)
     # section-level RTL
     sp = sec._sectPr
