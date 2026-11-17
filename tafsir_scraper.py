@@ -24,12 +24,14 @@ Design (mirrors the Shamela scraper)
 
 Output tree
 ───────────
-    <out_dir>/<src>/raw/surah_053.jsonl     raw records   (source of truth)
-    <out_dir>/<src>/raw/surah_053.done      completion marker
-    <out_dir>/<src>/md/053_النجم.md         per-surah Markdown
-    <out_dir>/<src>/<src>_053_النجم.json     with --json
-    <out_dir>/<src>/<src>_053_النجم.docx     with --docx   (one Word file per source)
-    <out_dir>/<src>/docx/053_النجم.docx     (per-surah files, any format; one merged file with --merge)
+    <out_dir>/<عنوان المصدر>/البيانات_الخام/surah_053.jsonl   raw records (source of truth)
+    <out_dir>/<عنوان المصدر>/البيانات_الخام/surah_053.done    completion marker
+    <out_dir>/<عنوان المصدر>/ماركداون/053_النجم.md            per-surah Markdown
+    <out_dir>/<عنوان المصدر>/جيسون/053_النجم.json             with --json
+    <out_dir>/<عنوان المصدر>/وورد/053_النجم.docx              with --docx (one file per surah;
+                                                              one merged file with --merge)
+    <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/وورد/053_النجم.docx   with --combine
+    (old English-named folders are renamed to the Arabic ones automatically)
     <out_dir>/quran.json                    (cached; used for ﴿ayah﴾ headings)
 
 Usage
@@ -57,7 +59,7 @@ Usage
     #   per ayah: ﴿verse﴾ → saadi → ibn-alqayyim → …
     python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53 --docx
     python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --combine_only
-    #   → <out_dir>/combined/سورة النجم.md  and  .docx
+    #   → <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/ماركداون|وورد/سورة النجم.md|.docx
 
     # extras
     python tafsir_scraper.py --src saadi --surah 53 --json --txt
@@ -160,6 +162,11 @@ TAFSIR_SOURCES = {
 
 # the "علوم" tab: غريب ومعاني / أسباب النزول / إعراب ولغة / قراءات / أحكام
 ULOOM_SOURCES = {
+    "qiraat-almawsoah": "القراءات — الموسوعة القرآنية",
+    "mafateeh-alaghanee": "مفاتيح الأغاني في القراءات",
+    "ahkam-altarayfi": "أحكام القرآن للطريفي",
+    "alikleel": "الإكليل للسيوطي",
+    "eedah-naskh-mansukh": "ناسخ القرآن ومنسوخه لمكي",
     "siraaj-ghareeb": "غريب القرآن للخضيري", "almuyassar-ghareeb": "الميسر في الغريب",
     "ghareeb-ibn-qutaybah": "غريب القرآن لابن قتيبة",
     "altibyan-ghreeb": "غريب القرآن لابن الهائم", "zajjaj": "معاني الزجاج",
@@ -175,15 +182,9 @@ ULOOM_SOURCES = {
     "ahkam-ibn-alarabee": "أحكام القرآن لابن العربي", "aljasas": "أحكام القرآن للجصاص",
     "ilkia-alharrasee": "أحكام القرآن لإلكيا الهراسي",
 }
-# listed on the site but greyed-out ("disabled") or not plain text (iraab-graphs returns
-# HTML/graphs).  Not part of --group uloom, but they still get a proper Arabic title
-# if you pass them explicitly with --src.
-EXTRA_SOURCES = {
-    "iraab-graphs": "الإعراب المرسوم", "qiraat-almawsoah": "القراءات — الموسوعة القرآنية",
-    "mafateeh-alaghanee": "مفاتيح الأغاني في القراءات",
-    "ahkam-altarayfi": "أحكام القرآن للطريفي", "alikleel": "الإكليل للسيوطي",
-    "eedah-naskh-mansukh": "ناسخ القرآن ومنسوخه لمكي",
-}
+# not plain text (returns HTML/graphs) -> not part of --group uloom, but it still gets an
+# Arabic title if you pass it explicitly with --src.
+EXTRA_SOURCES = {"iraab-graphs": "الإعراب المرسوم"}
 GROUPS = {"tafsir": TAFSIR_SOURCES, "uloom": ULOOM_SOURCES}
 ALL_SOURCES = {**TAFSIR_SOURCES, **ULOOM_SOURCES, **EXTRA_SOURCES}
 
@@ -220,6 +221,64 @@ def load_source_registry(extra: str | None = None) -> int:
 def src_title(src: str) -> str:
     """Arabic display name of a source (never the English slug when it is known)."""
     return ALL_SOURCES.get(src, src)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# OUTPUT FOLDERS  (all Arabic; old English-named folders are renamed automatically)
+# ═══════════════════════════════════════════════════════════════════════════
+
+COMBINED_DIR = "جمع_التفاسير"
+RAW_DIR = "البيانات_الخام"
+FMT_DIR = {"md": "ماركداون", "docx": "وورد", "txt": "نصوص", "json": "جيسون"}
+_LEGACY_FMT_DIR = {"raw": RAW_DIR, "combined": COMBINED_DIR, **FMT_DIR}
+_fs_lock = threading.Lock()
+
+
+def safe_name(text: str, limit: int = 150) -> str:
+    """Folder-safe version of an Arabic title (keeps Arabic, drops \\ / : * ? " < > |)."""
+    t = re.sub(r'[\\/:*?"<>|\r\n\t]+', " ", text)
+    t = re.sub(r"\s+", " ", t).strip(" .")
+    if len(t) > limit:
+        import hashlib
+        t = t[:limit - 9].rstrip(" ._") + "_" + hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
+    return t or "مصدر"
+
+
+def _adopt(old: Path, new: Path) -> Path:
+    """Rename a legacy (English-named) folder to its Arabic name once, then return `new`."""
+    with _fs_lock:
+        if old != new and old.is_dir() and not new.exists():
+            try:
+                old.rename(new)
+                log(f"  [folders] renamed {old.name} → {new.name}")
+            except OSError as e:
+                log(f"[!] could not rename {old} → {new} ({e}); using the old folder")
+                return old
+        new.parent.mkdir(parents=True, exist_ok=True)
+    return new
+
+
+def src_dir(out_dir: Path, src: str) -> Path:
+    """<out_dir>/<Arabic source title>/   (was <out_dir>/<slug>/)"""
+    return _adopt(out_dir / src, out_dir / safe_name(src_title(src)))
+
+
+def sub_dir(parent: Path, key: str) -> Path:
+    """parent/<Arabic name of 'raw' | 'md' | 'docx' | 'txt' | 'json'>  (migrates the old name)."""
+    new = parent / _LEGACY_FMT_DIR.get(key, key)
+    d = _adopt(parent / key, new)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def combined_dir(out_dir: Path, order: list[str]) -> Path:
+    """<out_dir>/جمع_التفاسير/<title1>_<title2>_…/  — one folder per combination (and order),
+    so combining different sources never overwrites an earlier result."""
+    name = safe_name("_".join(safe_name(src_title(x)) for x in order))
+    d = _adopt(out_dir / "combined", out_dir / COMBINED_DIR) if (out_dir / "combined").is_dir() else out_dir / COMBINED_DIR
+    d = d / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SMALL UTILITIES
@@ -577,8 +636,7 @@ def debug_marks(out_dir: Path, sources: list[str], surahs: list[int]) -> None:
 
 
 def raw_paths(out_dir: Path, src: str, surah: int) -> tuple[Path, Path]:
-    d = out_dir / src / "raw"
-    d.mkdir(parents=True, exist_ok=True)
+    d = sub_dir(src_dir(out_dir, src), "raw")
     return d / f"surah_{surah:03d}.jsonl", d / f"surah_{surah:03d}.done"
 
 
@@ -738,7 +796,7 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
     """Every requested format follows the same rule:
          (default)   one file per surah   -> <src>/<format>/<surah>.<ext>
          --merge     one file for all     -> <src>/<name>.<ext>"""
-    base = out_dir / src
+    base = src_dir(out_dir, src)
     stem = surahs_stem(surahs)
     title = src_title(src)
     sections = []
@@ -754,9 +812,7 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
 
     def target(fmt: str, ext: str, s: int | None = None) -> Path:
         if not args.merge and s is not None:
-            d = base / fmt
-            d.mkdir(parents=True, exist_ok=True)
-            return d / f"{surah_file(s)}.{ext}"
+            return sub_dir(base, fmt) / f"{surah_file(s)}.{ext}"
         base.mkdir(parents=True, exist_ok=True)
         return base / f"{stem}.{ext}"
 
@@ -865,7 +921,8 @@ def _d_par(doc, text: str, font: str, size: float, *, bold=False, color=None,
     return par
 
 
-def _d_heading(doc, text: str, level: int, font: str, size: float, color: str, page_break=False):
+def _d_heading(doc, text: str, level: int, font: str, size: float, color: str, page_break=False,
+               bold: bool = True):
     # *doc* may be a Document or a table cell (cells have no add_heading)
     h = (doc.add_heading(level=level) if hasattr(doc, "add_heading")
          else doc.add_paragraph(style=f"Heading {level}"))
@@ -878,7 +935,7 @@ def _d_heading(doc, text: str, level: int, font: str, size: float, color: str, p
     h.paragraph_format.keep_with_next = True
     if page_break:
         h.paragraph_format.page_break_before = True
-    _d_run(h, text, font, size, True, color)
+    _d_run(h, text, font, size, bold, color)
     return h
 
 
@@ -966,7 +1023,7 @@ def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_bre
         for r in recs:
             rng = (ar_nums(r["a_start"]) if r["a_start"] == r["a_end"]
                    else f"{ar_nums(r['a_start'])}-{ar_nums(r['a_end'])}")
-            _d_heading(doc, f"الآية {rng}", 2, font, size + 2, C["ayah"])
+            _d_heading(doc, f"الآية {rng}", 2, font, size + 2, C["ayah"], bold=False)
             head = quran_heading(quran, s, r["a_start"], r["a_end"])
             if head:
                 _d_par(doc, head, font, size, bold=False, color=C["quran"], after=6)
@@ -1193,7 +1250,8 @@ def _d_tafsir_block(container, item, e, font: str, size: float, title_size: floa
     if (rec["a_start"], rec["a_end"]) != (e["a_start"], e["a_end"]):
         label += f" — الآيات {_rng(rec['a_start'], rec['a_end'])}"
     tf = TAFSIR_FONT   # tafsir name + text; verses stay in *font* (Kitab)
-    block = [_d_heading(container, label, 4, tf, title_size, SRC_FG[(idx - 1) % len(SRC_FG)])]
+    block = [_d_heading(container, label, 4, tf, title_size, SRC_FG[(idx - 1) % len(SRC_FG)],
+                        bold=False)]
     for line in body.split("\n"):
         if is_poem_line(line):
             block.append(_d_par(container, poem_text(line), tf, size, color=POEM_COLOR,
@@ -1246,7 +1304,7 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
         _d_heading(doc, f"سورة {SUWAR[s - 1][1]}", 1, font, size + 6, C["surah"],
                    page_break=k > 0)
         for e in entries:
-            _d_heading(doc, f"الآية {_rng(e['a_start'], e['a_end'])}", 2, font, size + 2, C["ayah"])
+            _d_heading(doc, f"الآية {_rng(e['a_start'], e['a_end'])}", 2, font, size + 2, C["ayah"], bold=False)
             head = quran_heading(quran, s, e["a_start"], e["a_end"])
             if head:
                 vp = _d_par(doc, head, font, size, bold=False, color=C["quran"], after=6)
@@ -1261,8 +1319,7 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
 
 
 def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, quran) -> None:
-    root = out_dir / "combined"
-    root.mkdir(parents=True, exist_ok=True)
+    root = combined_dir(out_dir, order)
     stem = surahs_stem(surahs)
     sections = []
     for s in surahs:
@@ -1278,8 +1335,7 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
         names = "، ".join(_src_label(i, src) for i, src in enumerate(order, 1))
         head = f"# جمع التفاسير\n\n> {names}\n\n"
         if not args.merge:
-            md_dir = root / "md"
-            md_dir.mkdir(parents=True, exist_ok=True)
+            md_dir = sub_dir(root, "md")
             for s, entries in sections:
                 md = build_combined_md(order, s, entries, quran)
                 (md_dir / f"{surah_file(s)}.md").write_text(head + md, encoding="utf-8")
@@ -1290,8 +1346,7 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
             log(f"  [md] saved → {root / (stem + '.md')}")
     if args.docx:
         if not args.merge:
-            d = root / "docx"
-            d.mkdir(parents=True, exist_ok=True)
+            d = sub_dir(root, "docx")
             for s, entries in sections:
                 build_combined_docx(d / f"{surah_file(s)}.docx", order, [(s, entries)],
                                     quran, args.font, args.docx_size,
@@ -1373,8 +1428,8 @@ def main():
                    help="list unusual symbols in the saved data (to see which quote marks the site uses) and exit")
     p.add_argument("--combine", default=None, metavar="SLUGS",
                    help="comma-separated sources, IN ORDER, merged into ONE file: per ayah the "
-                        "verse, then each tafsir in that order → <out_dir>/combined/"
-                        "<out_dir>/combined/سورة <name>.md (+ .docx with --docx). Sources are scraped if "
+                        "verse, then each tafsir in that order → "
+                        "<out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/ (one folder per combination). Sources are scraped if "
                         "missing, so it works while downloading or after.")
     p.add_argument("--combine_only", action="store_true",
                    help="with --combine: skip the individual per-source outputs")
@@ -1401,7 +1456,7 @@ def main():
             print(f"[{grp}]")
             for k, v in d.items():
                 print(f"  {k:24s} {v}")
-        print("[extra — disabled on the site / non-text]")
+        print("[extra — non-text, pass explicitly with --src]")
         for k, v in EXTRA_SOURCES.items():
             print(f"  {k:24s} {v}")
         return
