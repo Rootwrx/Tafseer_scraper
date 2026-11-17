@@ -26,10 +26,13 @@ Output tree
 ───────────
     <out_dir>/<عنوان المصدر>/raw/surah_053.jsonl     raw records (source of truth)
     <out_dir>/<عنوان المصدر>/raw/surah_053.done      completion marker
-    <out_dir>/<عنوان المصدر>/md/053_النجم.md         per-surah Markdown
-    <out_dir>/<عنوان المصدر>/json/053_النجم.json     with --json
-    <out_dir>/<عنوان المصدر>/docx/053_النجم.docx     with --docx (one file per surah;
-                                                     one merged file with --merge)
+    <out_dir>/<عنوان المصدر>/md/سورة النجم.md        per-surah Markdown   (md + docx are ON by default;
+    <out_dir>/<عنوان المصدر>/docx/سورة النجم.docx    per-surah Word        use --no-md / --no-docx to skip)
+    <out_dir>/<عنوان المصدر>/json/سورة النجم.json    with --json
+    <out_dir>/<عنوان المصدر>/txt/سورة النجم.txt      with --txt
+    --merge → ONE file per format directly inside <out_dir>/<عنوان المصدر>/ :
+        سورة الفاتحة إلى سورة الناس.docx | القرآن كاملا.docx | سورة النجم إلى سورة الرحمن.md
+        سور 1-3،53،112-114.docx          (non-contiguous selections are named by number)
     <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/docx/سورة النجم.docx   with --combine
     (old <slug>/ folders are renamed to the Arabic source title automatically)
     <out_dir>/quran.json                    (cached; used for ﴿ayah﴾ headings)
@@ -51,14 +54,21 @@ Usage
     # every source of the tafsir tab for surah 53
     python tafsir_scraper.py --group tafsir --surah 53
 
-    # Word output (RTL, real Heading styles → Navigation Pane)
-    python tafsir_scraper.py --src saadi --surah 53 --docx
-    python tafsir_scraper.py --src saadi --surah 1-3 --docx --font "Kitab" --docx_size 18
+    # Word output (RTL, real Heading styles → Navigation Pane)  — on by default
+    python tafsir_scraper.py --src saadi --surah 53
+    python tafsir_scraper.py --src saadi --surah 1-3 --font "Kitab" --docx_size 18
+
+    # ONE merged file (docx + md) instead of one file per surah
+    python tafsir_scraper.py --src ibn-katheer --surah all --merge
+    python tafsir_scraper.py --src ibn-katheer --surah 1-9 --merge --no-md
+    #   already downloaded?  rebuild from the saved raw/ data, NO network needed:
+    python tafsir_scraper.py --src ibn-katheer --surah all --merge --build_only
 
     # combine several tafsirs into ONE md/docx (order = order given)
     #   per ayah: ﴿verse﴾ → saadi → ibn-alqayyim → …
-    python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53 --docx
-    python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --combine_only
+    python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53
+    python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --combine_only
+    python tafsir_scraper.py --combine saadi,muyassar --surah all --merge --combine_only --build_only
     #   → <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/md|docx/سورة النجم.md|.docx
 
     # extras
@@ -324,11 +334,16 @@ def parse_surah_spec(spec: str) -> list[int]:
         part = part.strip()
         if not part:
             continue
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            out.update(range(int(lo), int(hi) + 1))
-        else:
-            out.add(int(part))
+        try:
+            if "-" in part:
+                lo, hi = (int(x) for x in part.split("-", 1))
+                if lo > hi:
+                    raise SystemExit(f"[!] invalid surah range '{part}' (start is after end)")
+                out.update(range(lo, hi + 1))
+            else:
+                out.add(int(part))
+        except ValueError:
+            raise SystemExit(f"[!] cannot read surah spec '{part}' (use e.g. 53 | 1-3,53 | all)")
     bad = [s for s in out if not 1 <= s <= 114]
     if bad:
         raise SystemExit(f"[!] invalid surah number(s): {sorted(bad)} (valid: 1-114)")
@@ -339,12 +354,19 @@ def parse_ayah_range(spec: str | None, surah: int) -> tuple[int, int]:
     n = SUWAR[surah - 1][0]
     if not spec:
         return 1, n
-    if "-" in spec:
-        lo, hi = spec.split("-", 1)
-        lo, hi = int(lo), int(hi)
-    else:
-        lo = hi = int(spec)
-    return max(1, lo), min(n, hi)
+    try:
+        if "-" in spec:
+            lo, hi = (int(x) for x in spec.split("-", 1))
+        else:
+            lo = hi = int(spec)
+    except ValueError:
+        raise SystemExit(f"[!] cannot read --ayahs '{spec}' (use e.g. 33-54 or 5)")
+    if lo > hi:
+        raise SystemExit(f"[!] invalid --ayahs '{spec}' (start is after end)")
+    lo, hi = max(1, lo), min(n, hi)
+    if lo > hi:
+        raise SystemExit(f"[!] --ayahs is outside surah {surah} (it has {n} ayahs)")
+    return lo, hi
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -424,7 +446,7 @@ def merge_titles(data: dict) -> dict:
         if not isinstance(ent, dict):
             ent = data[slug] = {}
         ent["title_ar"] = title
-        grp = "tafsir" if slug in TAFSIR_SOURCES else "uloom"
+        grp = "tafsir" if slug in TAFSIR_SOURCES else ("extra" if slug in EXTRA_SOURCES else "uloom")
         ent.setdefault("group", grp)
     return data
 
@@ -661,7 +683,16 @@ def scrape_surah(session, base: str, out_dir: Path, src: str, surah: int,
     """Sequentially walk one surah for one source (jumping over grouped ayahs)."""
     jsonl, done = raw_paths(out_dir, src, surah)
     if force:
-        jsonl.write_text("", encoding="utf-8")
+        if partial:   # only forget what overlaps the requested range; keep the rest of the surah
+            recs0 = load_records(jsonl)
+            hit = [r for r in recs0 if not (r["a_end"] < a_lo or r["a_start"] > a_hi)]
+            if hit:   # a grouped block sticking out of the range is re-fetched whole
+                a_lo, a_hi = min([a_lo] + [r["a_start"] for r in hit]), max([a_hi] + [r["a_end"] for r in hit])
+            keep = [r for r in recs0 if r["a_end"] < a_lo or r["a_start"] > a_hi]
+            jsonl.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in keep),
+                             encoding="utf-8")
+        else:
+            jsonl.write_text("", encoding="utf-8")
         done.unlink(missing_ok=True)
     elif done.exists():
         return {"src": src, "surah": surah, "status": "skipped", "fetched": 0}
@@ -744,12 +775,24 @@ def surah_file(s: int) -> str:
 
 
 def surahs_stem(surahs: list[int]) -> str:
-    """File-name stem, Arabic surah name only: سورة النجم | سورة النجم إلى سورة الرحمن | القرآن كاملا"""
+    """File-name stem for a merged file, built from the surahs the file REALLY contains:
+         114 surahs → القرآن كاملا          one surah → سورة النجم
+         contiguous → سورة النجم إلى سورة الرحمن
+         otherwise  → سور 1-3،53،112-114   (never claims a range that has holes)"""
+    surahs = sorted(set(surahs))
     if len(surahs) == 114:
         return "القرآن كاملا"
     if len(surahs) == 1:
         return surah_file(surahs[0])
-    return f"{surah_file(surahs[0])} إلى {surah_file(surahs[-1])}"
+    if surahs[-1] - surahs[0] + 1 == len(surahs):
+        return f"{surah_file(surahs[0])} إلى {surah_file(surahs[-1])}"
+    runs, lo, prev = [], surahs[0], surahs[0]
+    for x in surahs[1:] + [None]:
+        if x is None or x != prev + 1:
+            runs.append(str(lo) if lo == prev else f"{lo}-{prev}")
+            lo = x
+        prev = x
+    return safe_name("سور " + "،".join(runs), limit=100)
 
 
 def build_md_for_surah(src: str, surah: int, records: list[dict], quran) -> str:
@@ -797,7 +840,6 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
          (default)   one file per surah   -> <src>/<format>/<surah>.<ext>
          --merge     one file for all     -> <src>/<name>.<ext>"""
     base = src_dir(out_dir, src)
-    stem = surahs_stem(surahs)
     title = src_title(src)
     sections = []
     for s in surahs:
@@ -808,9 +850,10 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
         uniq = {(r["a_start"], r["a_end"]): r for r in recs}
         sections.append((s, sorted(uniq.values(), key=lambda r: r["a_start"])))
     if not sections:
-        log(f"  [!] {title}: no data saved for surah {stem} — this source has no material "
-            f"for it, so no files were built")
+        log(f"  [!] {title}: no data saved for the requested surah(s) — this source has no "
+            f"material for them (or they were not downloaded), so no files were built")
         return
+    stem = surahs_stem([s for s, _ in sections])   # name reflects what the file really contains
 
     def target(fmt: str, ext: str, s: int | None = None) -> Path:
         if not args.merge and s is not None:
@@ -847,7 +890,8 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
                 build_docx(target("docx", "docx", s), src, [(s, recs)], quran,
                            args.font, args.docx_size, title_extra=f"سورة {SUWAR[s - 1][1]}")
         else:
-            build_docx(target("docx", "docx"), src, sections, quran, args.font, args.docx_size)
+            build_docx(target("docx", "docx"), src, sections, quran, args.font, args.docx_size,
+                       title_extra="" if len(sections) == 1 else stem)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1381,7 +1425,6 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
 
 def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, quran) -> None:
     root = combined_dir(out_dir, order)
-    stem = surahs_stem(surahs)
     sections = []
     for s in surahs:
         entries = combined_entries(out_dir, order, s)
@@ -1390,6 +1433,7 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
     if not sections:
         log("[!] combine: no data found for the requested sources/surahs")
         return
+    stem = surahs_stem([s for s, _ in sections])
 
     # same rule as build_outputs: one file per surah by default, --merge = one file for all
     if args.md:
@@ -1416,8 +1460,20 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
                                     bold=args.tafsir_bold)
         else:
             build_combined_docx(root / f"{stem}.docx", order, sections, quran,
-                                args.font, args.docx_size, title_size=args.tafsir_title_size,
-                                bold=args.tafsir_bold)
+                                args.font, args.docx_size,
+                                title_extra="" if len(sections) == 1 else stem,
+                                title_size=args.tafsir_title_size, bold=args.tafsir_bold)
+
+
+def report_incomplete(out_dir: Path, sources: list[str], surahs: list[int]) -> None:
+    """Warn (before building) about surahs that were never fully downloaded, so a merged
+    file is never silently incomplete."""
+    for src in sources:
+        missing = [s for s in surahs if not raw_paths(out_dir, src, s)[1].exists()]
+        if missing:
+            shown = ", ".join(str(s) for s in missing[:20]) + (" …" if len(missing) > 20 else "")
+            log(f"  [!] {src_title(src)}: {len(missing)} surah(s) not marked complete "
+                f"(no .done): {shown} — the output may be partial; re-run without --build_only")
 
 
 def print_status(out_dir: Path, sources: list[str], surahs: list[int]) -> None:
@@ -1498,6 +1554,9 @@ def main():
                    help="extra JSON of Arabic source titles (default: sources_ar.json next to the script)")
     p.add_argument("--list_sources", action="store_true", help="list known source slugs and exit")
     p.add_argument("--status", action="store_true", help="show progress and exit")
+    p.add_argument("--build_only", action="store_true",
+                   help="NO network: skip scraping and build md/docx/json/txt (and --merge / "
+                        "--combine files) from the already saved raw/ data")
     args = p.parse_args()
     args.font = args.font.split(",")[0].strip() or "Kitab"   # Word takes ONE font name, not a CSS stack
 
@@ -1539,6 +1598,8 @@ def main():
     surahs = parse_surah_spec(args.surah)
     if args.ayahs and len(surahs) != 1:
         p.error("--ayahs only works with a single --surah")
+    if args.ayahs:
+        parse_ayah_range(args.ayahs, surahs[0])   # validate early (also with --build_only)
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1550,52 +1611,64 @@ def main():
         debug_marks(out_dir, sources, surahs)
         return
 
-    session = make_session(args.ua)
-    if args.no_prefilter:
-        atomic_write_json(out_dir / "sources.json", merge_titles(load_json(out_dir / "sources.json", {}) or {}))
-    avail = Availability(None if args.no_prefilter else fetch_sources_meta(session, args.base, out_dir))
     quran = None
-    if args.with_quran:
-        try:
-            quran = load_quran(session, args.base, out_dir)
-        except Exception as e:
-            log(f"[!] could not load quran.json ({e}) — continuing without ﴿ayah﴾ headings")
-
-    partial = bool(args.ayahs)
-    tasks = []
-    for src in sources:
-        for s in surahs:
-            lo, hi = parse_ayah_range(args.ayahs, s)
-            tasks.append((src, s, lo, hi))
-    log(f"[*] {len(sources)} source(s) × {len(surahs)} surah(s) = {len(tasks)} task(s), "
-        f"{args.workers} workers")
-
-    pool = ThreadPoolExecutor(max_workers=args.workers)
-    futs = {
-        pool.submit(scrape_surah, session, args.base, out_dir, src, s, lo, hi, avail,
-                    args.delay, args.force, not args.no_prefilter, partial): (src, s)
-        for src, s, lo, hi in tasks
-    }
-    ok = failed = skipped = 0
-    try:
-        for i, f in enumerate(as_completed(futs), 1):
-            src, s = futs[f]
+    if args.build_only:
+        report_incomplete(out_dir, sources, surahs)
+        if args.with_quran:
+            quran = load_json(out_dir / "quran.json")
+            if not quran:
+                log("[!] --build_only: no cached quran.json — building without ﴿ayah﴾ headings "
+                    "(run once without --build_only to cache it)")
+        ok = failed = skipped = 0
+    else:
+        session = make_session(args.ua)
+        if args.no_prefilter:
+            atomic_write_json(out_dir / "sources.json",
+                              merge_titles(load_json(out_dir / "sources.json", {}) or {}))
+        avail = Availability(None if args.no_prefilter else fetch_sources_meta(session, args.base, out_dir))
+        if args.with_quran:
             try:
-                res = f.result()
-                if res["status"] == "skipped":
-                    skipped += 1
-                else:
-                    ok += 1
-                log(f"  [{i}/{len(tasks)}] {src} / {s:03d} {SUWAR[s-1][1]}: "
-                    f"{res['status']} ({res['fetched']} requests)")
+                quran = load_quran(session, args.base, out_dir)
             except Exception as e:
-                failed += 1
-                log(f"  [{i}/{len(tasks)}] {src} / {s:03d}: ERROR {e}")
-    except KeyboardInterrupt:
-        log("\n[!] Interrupted — cancelling queued work. Progress saved; re-run to resume.")
-        pool.shutdown(wait=False, cancel_futures=True)
-        sys.exit(1)
-    pool.shutdown(wait=True)
+                log(f"[!] could not load quran.json ({e}) — continuing without ﴿ayah﴾ headings")
+
+        partial = bool(args.ayahs)
+        tasks = []
+        for src in sources:
+            for s in surahs:
+                lo, hi = parse_ayah_range(args.ayahs, s)
+                tasks.append((src, s, lo, hi))
+        log(f"[*] {len(sources)} source(s) × {len(surahs)} surah(s) = {len(tasks)} task(s), "
+            f"{args.workers} workers")
+
+        pool = ThreadPoolExecutor(max_workers=args.workers)
+        futs = {
+            pool.submit(scrape_surah, session, args.base, out_dir, src, s, lo, hi, avail,
+                        args.delay, args.force, not args.no_prefilter, partial): (src, s)
+            for src, s, lo, hi in tasks
+        }
+        ok = failed = skipped = 0
+        try:
+            for i, f in enumerate(as_completed(futs), 1):
+                src, s = futs[f]
+                try:
+                    res = f.result()
+                    if res["status"] == "skipped":
+                        skipped += 1
+                    else:
+                        ok += 1
+                    log(f"  [{i}/{len(tasks)}] {src} / {s:03d} {SUWAR[s-1][1]}: "
+                        f"{res['status']} ({res['fetched']} requests)")
+                except Exception as e:
+                    failed += 1
+                    log(f"  [{i}/{len(tasks)}] {src} / {s:03d}: ERROR {e}")
+        except KeyboardInterrupt:
+            log("\n[!] Interrupted — cancelling queued work. Progress saved; re-run to resume.")
+            pool.shutdown(wait=False, cancel_futures=True)
+            sys.exit(1)
+        pool.shutdown(wait=True)
+        if failed:
+            report_incomplete(out_dir, sources, surahs)
 
     log("[*] Building outputs ...")
     if not (combine_order and args.combine_only):
