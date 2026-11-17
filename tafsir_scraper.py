@@ -29,7 +29,7 @@ Output tree
     <out_dir>/<src>/md/053_النجم.md         per-surah Markdown
     <out_dir>/<src>/<src>_053_النجم.json     with --json
     <out_dir>/<src>/<src>_053_النجم.docx     with --docx   (one Word file per source)
-    <out_dir>/<src>/docx/053_النجم.docx     with --docx --split   (any format: md/txt/json/docx)
+    <out_dir>/<src>/docx/053_النجم.docx     (per-surah files, any format; one merged file with --merge)
     <out_dir>/quran.json                    (cached; used for ﴿ayah﴾ headings)
 
 Usage
@@ -51,12 +51,12 @@ Usage
 
     # Word output (RTL, real Heading styles → Navigation Pane)
     python tafsir_scraper.py --src saadi --surah 53 --docx
-    python tafsir_scraper.py --src saadi --surah 1-3 --docx --split --font "Kitab" --docx_size 18
+    python tafsir_scraper.py --src saadi --surah 1-3 --docx --font "Kitab" --docx_size 18
 
     # combine several tafsirs into ONE md/docx (order = order given)
     #   per ayah: ﴿verse﴾ → saadi → ibn-alqayyim → …
     python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53 --docx
-    python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --split --combine_only
+    python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --combine_only
     #   → <out_dir>/combined/سورة النجم.md  and  .docx
 
     # extras
@@ -668,8 +668,8 @@ def _json_entries(recs: list[dict]) -> list[dict]:
 
 def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> None:
     """Every requested format follows the same rule:
-         --split     one file per surah   -> <src>/<format>/<surah>.<ext>
-         (default)   one file for all     -> <src>/<name>.<ext>"""
+         (default)   one file per surah   -> <src>/<format>/<surah>.<ext>
+         --merge     one file for all     -> <src>/<name>.<ext>"""
     base = out_dir / src
     stem = surahs_stem(surahs)
     title = ALL_SOURCES.get(src, src)
@@ -685,7 +685,7 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
         return
 
     def target(fmt: str, ext: str, s: int | None = None) -> Path:
-        if args.split and s is not None:
+        if not args.merge and s is not None:
             d = base / fmt
             d.mkdir(parents=True, exist_ok=True)
             return d / f"{surah_file(s)}.{ext}"
@@ -693,7 +693,7 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
         return base / f"{stem}.{ext}"
 
     if args.md:
-        if args.split:
+        if not args.merge:
             for s, recs in sections:
                 target("md", "md", s).write_text(build_md_for_surah(src, s, recs, quran), encoding="utf-8")
         else:
@@ -701,7 +701,7 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
             body = "\n\n".join(build_md_for_surah(src, s, recs, quran) for s, recs in sections)
             target("md", "md").write_text(fm + body, encoding="utf-8")
     if args.txt:
-        if args.split:
+        if not args.merge:
             for s, recs in sections:
                 target("txt", "txt", s).write_text(_txt_for_surah(s, recs), encoding="utf-8")
         else:
@@ -709,14 +709,14 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
                                           encoding="utf-8")
     if args.json:
         meta = {"source": src, "title": title, "origin": f"{BASE}/{src}"}
-        if args.split:
+        if not args.merge:
             for s, recs in sections:
                 atomic_write_json(target("json", "json", s), {**meta, "entries": _json_entries(recs)})
         else:
             atomic_write_json(target("json", "json"), {
                 **meta, "entries": [e for _, recs in sections for e in _json_entries(recs)]})
     if args.docx:
-        if args.split:
+        if not args.merge:
             for s, recs in sections:
                 build_docx(target("docx", "docx", s), src, [(s, recs)], quran,
                            args.font, args.docx_size, title_extra=f"سورة {SUWAR[s - 1][1]}")
@@ -1174,11 +1174,11 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
         log("[!] combine: no data found for the requested sources/surahs")
         return
 
-    # same rule as build_outputs: --split = one file per surah, otherwise one file for all
+    # same rule as build_outputs: one file per surah by default, --merge = one file for all
     if args.md:
         names = "، ".join(_src_label(i, src) for i, src in enumerate(order, 1))
         head = f"# جمع التفاسير\n\n> {names}\n\n"
-        if args.split:
+        if not args.merge:
             md_dir = root / "md"
             md_dir.mkdir(parents=True, exist_ok=True)
             for s, entries in sections:
@@ -1190,7 +1190,7 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
             (root / f"{stem}.md").write_text(head + "\n\n".join(mds), encoding="utf-8")
             log(f"  [md] saved → {root / (stem + '.md')}")
     if args.docx:
-        if args.split:
+        if not args.merge:
             d = root / "docx"
             d.mkdir(parents=True, exist_ok=True)
             for s, entries in sections:
@@ -1232,9 +1232,9 @@ def main():
     p.add_argument("--txt", action="store_true", help="plain-text output")
     p.add_argument("--docx", action="store_true",
                    help="Word output (needs python-docx)")
-    p.add_argument("--split", "--docx_split", dest="split", action="store_true",
-                   help="one file PER SURAH for every output format (md, txt, json, docx; also with "
-                        "--combine) instead of one file holding all requested surahs")
+    p.add_argument("--merge", action="store_true",
+                   help="put all requested surahs in ONE file per format (default: one file per "
+                        "surah for every format; also applies to --combine)")
     p.add_argument("--font", default="Kitab",
                    help="DOCX font (must be installed on the machine opening the file). Word has no CSS-style "
                         "fallback stack, so only the first name of a list like \"Kitab, system-ui\" is used")

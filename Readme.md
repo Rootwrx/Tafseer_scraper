@@ -5,7 +5,7 @@ A Python command-line tool that downloads tafsir (Quran commentary) and related 
 ## Features
 
 - **Many sources, any surahs**: one source or several; one surah, a list or ranges (`1,23,44` or `1-3,53,112-114`) or the whole Quran (`all`).
-- **One switch for file layout**: `--split` gives one file per surah for every output format (Markdown, Word, text, JSON, and combined files). Without it you get one file per format holding all requested surahs.
+- **One file per surah by default**, for every output format (Markdown, Word, text, JSON, and combined files). Add `--merge` to get one file per format holding all requested surahs instead.
 - **Resumable**: each (source, surah) is saved as an append-only `.jsonl` file with a `.done` marker, so an interrupted run picks up where it stopped. Re-running the same command also retries any tasks that failed.
 - **Parallel**: runs (source, surah) tasks on a thread pool (`--workers`, `--delay`).
 - **Group-aware**: when the site returns one block covering several ayahs (for example 33-54), the scraper skips the ayahs already covered instead of requesting them again.
@@ -24,7 +24,7 @@ A Python command-line tool that downloads tafsir (Quran commentary) and related 
   - honorific ligatures (such as ﵇) spelled out when the font can't draw them
   - a download-date line in the document header
 - **Markdown output** that works in any viewer (plain Markdown, no HTML). Verses are shown in **bold**, and poetry lines lose the stray `؎` and get a gap between the two halves (plain Markdown cannot centre or colour text; the Word output does).
-- **Extra formats**: plain text and JSON, with the same `--split` rule as every other format.
+- **Extra formats**: plain text and JSON, with the same per-surah / `--merge` rule as every other format.
 - **Utilities**: list the known sources, show progress, and inspect unusual symbols in the saved data.
 
 ## Installation
@@ -62,20 +62,23 @@ python tafsir_scraper.py --group tafsir --surah 53
 
 # Word output
 python tafsir_scraper.py --src ibn-katheer --surah 53 --docx
-python tafsir_scraper.py --src saadi --surah 1-3 --docx --split --font "Kitab" --docx_size 18
+python tafsir_scraper.py --src saadi --surah 1-3 --docx --font "Kitab" --docx_size 18
 
-# Some surahs only, one file per surah in every format
-python tafsir_scraper.py --src tadabbur-wa-amal --surah 1,23,44 --docx --txt --split
+# Some surahs only (one file per surah in every format, the default)
+python tafsir_scraper.py --src tadabbur-wa-amal --surah 1,23,44 --docx --txt
+
+# The same surahs, but all in ONE file per format
+python tafsir_scraper.py --src tadabbur-wa-amal --surah 1,23,44 --docx --txt --merge
 
 # The whole Quran, one Word file and one Markdown file per surah
-python tafsir_scraper.py --src tadabbur-wa-amal --surah all --docx --split
+python tafsir_scraper.py --src tadabbur-wa-amal --surah all --docx
 
 # Merge several tafsirs into one file (order = order given)
 python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53 --docx
-python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --split --combine_only
+python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --combine_only
 
 # Example: Al-Mulk to An-Nas, one combined Word file per surah, five tafsirs in this order, no Markdown
-python tafsir_scraper.py --combine almuyassar-ghareeb,mukhtasar,aysar-altafasir,wahidi-asbab,ibn-katheer --surah 67-114 --docx --split --combine_only --no-md
+python tafsir_scraper.py --combine almuyassar-ghareeb,mukhtasar,aysar-altafasir,wahidi-asbab,ibn-katheer --surah 67-114 --docx --combine_only --no-md
 
 # Extras
 python tafsir_scraper.py --list_sources                        # show known source slugs
@@ -121,7 +124,7 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 | `--docx` | Word output (needs `python-docx`) |
 | `--txt` | Plain-text output |
 | `--json` | JSON output (raw fields plus cleaned `text` and `footnotes`) |
-| `--split` | One file **per surah** for every format you asked for, including `--combine`. Without it, each format gets one file holding all requested surahs. (`--docx_split` still works as an alias) |
+| `--merge` | Put all requested surahs in **one file** per format, including `--combine`. Without it, every format gets one file per surah (the default) |
 
 **Word (DOCX) appearance**
 
@@ -152,7 +155,7 @@ At least one of `--src`, `--group` or `--combine` is required, together with `--
 
 ## Output layout
 
-File names use the Arabic surah name. For several surahs without `--split`, the file name is `سورة <first> إلى سورة <last>` (only the surahs you asked for are inside), and for all 114 it is `القرآن كاملا`.
+File names use the Arabic surah name. With `--merge` and several surahs, the file name is `سورة <first> إلى سورة <last>` (only the surahs you asked for are inside), and for all 114 it is `القرآن كاملا`.
 
 The rule is the same for every format (`md`, `txt`, `json`, `docx`):
 
@@ -165,18 +168,18 @@ tafsir_output/
 │   │   ├── surah_053.jsonl         # raw records (source of truth)
 │   │   └── surah_053.done          # completion marker
 │   │
-│   │   # without --split: one file per format, all surahs inside
-│   ├── <name>.md  <name>.docx  <name>.txt  <name>.json
-│   │
-│   │   # with --split: one file per surah, one folder per format
+│   │   # default: one file per surah, one folder per format
 │   ├── md/    سورة النجم.md
 │   ├── docx/  سورة النجم.docx
 │   ├── txt/   سورة النجم.txt
-│   └── json/  سورة النجم.json
+│   ├── json/  سورة النجم.json
+│   │
+│   │   # with --merge: one file per format, all surahs inside
+│   └── <name>.md  <name>.docx  <name>.txt  <name>.json
 └── combined/                       # with --combine (md and docx)
-    ├── <name>.md  <name>.docx      # without --split
-    ├── md/    سورة النجم.md         # with --split
-    └── docx/  سورة النجم.docx       # with --split
+    ├── md/    سورة النجم.md         # default
+    ├── docx/  سورة النجم.docx       # default
+    └── <name>.md  <name>.docx      # with --merge
 ```
 
 With `--no-md` no `.md` files are written (per source or combined).
