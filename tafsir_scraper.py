@@ -353,6 +353,20 @@ BASMALA_MODE = "glyph"   # "glyph" = keep the ﷽ ligature (only if the font has
 BASMALA_LINES = (BASMALA, "\uFDFD")
 # a line made only of asterisks ("* * *") is a section separator: centred + red in DOCX
 _SEP_LINE_RE = re.compile(r"^(?:\*\s*){3,}$")
+# poetry: the site marks each verse line with U+060E (؎) and separates the two hemistichs with
+# "∗∗∗"; the site shows them centred + red.  The ؎ sign renders as junk in most fonts -> dropped.
+POEM_MARK = "\u060E"
+POEM_COLOR = "C00000"
+_HEMI_RE = re.compile(r"\s*[\u2217*]{3}\s*")
+
+
+def is_poem_line(line: str) -> bool:
+    return line.lstrip().startswith(POEM_MARK)
+
+
+def poem_text(line: str) -> str:
+    t = line.strip().lstrip(POEM_MARK).strip()
+    return _HEMI_RE.sub("\u2003\u2003\u2003", t)   # em-spaces between the two hemistichs
 # the site writes it as <span class="basmalah">﷽</span>; the single ligature glyph ﷽ (U+FDFD)
 # is missing/truncated in most Word fonts, so it is spelled out on its own line
 _BASMALA_RE = re.compile(r'<span[^>]*basmal[^>]*>.*?</span>|\uFDFD', re.S | re.I)
@@ -881,7 +895,10 @@ def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_bre
                     _d_run(par, seg, font, sz, bold=bool(red), color=red or base_color)
 
             for line in body.split("\n"):
-                if line.strip() in BASMALA_LINES:
+                if is_poem_line(line):
+                    _d_par(doc, poem_text(line), font, size, color=POEM_COLOR,
+                           align=WD_ALIGN_PARAGRAPH.CENTER, before=4, after=4)
+                elif line.strip() in BASMALA_LINES:
                     _rich(line.strip(), size + (2 if BASMALA_MODE == "text" else 10), "C99200", align=WD_ALIGN_PARAGRAPH.LEFT,
                           before=6, after=6)
                 elif _SEP_LINE_RE.match(line.strip()):
@@ -1080,7 +1097,10 @@ def _d_tafsir_block(container, item, e, font: str, size: float) -> None:
         label += f" — الآيات {_rng(rec['a_start'], rec['a_end'])}"
     block = [_d_heading(container, label, 3, font, size + 1, SRC_FG[(idx - 1) % len(SRC_FG)])]
     for line in body.split("\n"):
-        if line.strip() in BASMALA_LINES:
+        if is_poem_line(line):
+            block.append(_d_par(container, poem_text(line), font, size, color=POEM_COLOR,
+                                align=WD_ALIGN_PARAGRAPH.CENTER, before=4, after=4))
+        elif line.strip() in BASMALA_LINES:
             block.append(_d_rich(container, line.strip(), font,
                                  size + (2 if BASMALA_MODE == "text" else 10), "C99200",
                                  align=WD_ALIGN_PARAGRAPH.LEFT, before=6, after=6))
