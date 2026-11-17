@@ -17,6 +17,11 @@ Design (mirrors the Shamela scraper)
 ────────────────────────────────────
   • Resumable   — one append-only .jsonl per (source, surah) is the source of
                   truth; a .done marker is written when a surah finishes.
+  • Offline-first — before ANY request the script looks at raw/*.jsonl, *.done and
+                  the cached sources.json and works out which ayahs are really
+                  missing.  Only those are requested; if nothing is missing there
+                  is no network traffic at all and the files are simply rebuilt.
+                  (the run ends with the number of network requests actually made)
   • Parallel    — one task per (source, surah), run on a thread pool.
   • Group-aware — if a response covers ayahs 33-54 the scraper jumps to 55
                   instead of re-requesting 34…54.
@@ -61,21 +66,21 @@ Usage
     # ONE merged file (docx + md) instead of one file per surah
     python tafsir_scraper.py --src ibn-katheer --surah all --merge
     python tafsir_scraper.py --src ibn-katheer --surah 1-9 --merge --no-md
-    #   already downloaded?  rebuild from the saved raw/ data, NO network needed:
-    python tafsir_scraper.py --src ibn-katheer --surah all --merge --build_only
+    #   already downloaded?  run the SAME command again: it rebuilds from the saved raw/
+    #   data and only requests what is missing (nothing missing → zero network requests)
 
     # combine several tafsirs into ONE md/docx (order = order given)
     #   per ayah: ﴿verse﴾ → saadi → ibn-alqayyim → …
     python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53
     python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --combine_only
-    python tafsir_scraper.py --combine saadi,muyassar --surah all --merge --combine_only --build_only
+    python tafsir_scraper.py --combine saadi,muyassar --surah all --merge --combine_only
     #   → <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/md|docx/سورة النجم.md|.docx
 
     # extras
     python tafsir_scraper.py --src saadi --surah 53 --json --txt
     python tafsir_scraper.py --list_sources
-    python tafsir_scraper.py --src saadi --surah 53 --force      # re-scrape
-    python tafsir_scraper.py --src saadi --surah all --status    # progress only
+    python tafsir_scraper.py --src saadi --surah 53 --force      # re-download even if saved
+    python tafsir_scraper.py --src saadi --surah all --status    # progress only (no network)
 
 Install:  pip install curl_cffi python-docx   (curl_cffi optional; python-docx only for --docx)
 """
@@ -384,13 +389,24 @@ def make_session(user_agent: str | None = None):
     return s
 
 
+_net_lock = threading.Lock()
+_net_requests = 0   # every HTTP request actually sent (retries included)
+
+
+def net_requests() -> int:
+    return _net_requests
+
+
 def get_json(session, url: str, params: dict | None = None, referer: str | None = None,
              retries: int = 5, timeout: int = 25):
     """GET JSON with retry/backoff on 429 / 5xx / connection errors."""
+    global _net_requests
     last = "unknown error"
     headers = {"Referer": referer} if referer else {}
     for attempt in range(1, retries + 1):
         try:
+            with _net_lock:
+                _net_requests += 1
             r = session.get(url, params=params, headers=headers, timeout=timeout)
             if r.status_code == 429 or r.status_code >= 500:
                 last = f"HTTP {r.status_code}"
@@ -675,6 +691,22 @@ def load_records(path: Path) -> list[dict]:
                 except json.JSONDecodeError:
                     pass  # truncated last line from an interrupted run
     return recs
+
+
+def missing_ayahs(out_dir: Path, src: str, surah: int, a_lo: int, a_hi: int,
+                  avail: Availability, prefilter: bool, force: bool) -> list[int]:
+    """Ayahs that still need a network request, decided ONLY from what is already on disk
+    (raw/*.jsonl, *.done) plus the cached sources.json.  Empty list = nothing to download."""
+    jsonl, done = raw_paths(out_dir, src, surah)
+    if force:
+        return list(range(a_lo, a_hi + 1))
+    if done.exists():
+        return []
+    covered: set[int] = set()
+    for r in load_records(jsonl):
+        covered.update(range(r["a_start"], r["a_end"] + 1))
+    return [a for a in range(a_lo, a_hi + 1)
+            if a not in covered and (not prefilter or avail.has(src, abs_id(surah, a)))]
 
 
 def scrape_surah(session, base: str, out_dir: Path, src: str, surah: int,
@@ -1473,15 +1505,57 @@ def report_incomplete(out_dir: Path, sources: list[str], surahs: list[int]) -> N
         if missing:
             shown = ", ".join(str(s) for s in missing[:20]) + (" …" if len(missing) > 20 else "")
             log(f"  [!] {src_title(src)}: {len(missing)} surah(s) not marked complete "
-                f"(no .done): {shown} — the output may be partial; re-run without --build_only")
+                f"(no .done): {shown} — the output may be partial; re-run the same command "
+                f"to download what is missing")
 
 
-def print_status(out_dir: Path, sources: list[str], surahs: list[int]) -> None:
+def print_status(out_dir: Path, sources: list[str], surahs: list[int],
+                 avail: Availability, prefilter: bool) -> None:
+    """Progress from disk only (no network)."""
     for src in sources:
-        done = sum(1 for s in surahs if raw_paths(out_dir, src, s)[1].exists())
-        started = sum(1 for s in surahs if raw_paths(out_dir, src, s)[0].exists()
-                      and raw_paths(out_dir, src, s)[0].stat().st_size > 0)
-        print(f"  {src:24s} done {done:3d}/{len(surahs)}   started {started:3d}")
+        done = partial = todo = 0
+        for s in surahs:
+            jsonl, d = raw_paths(out_dir, src, s)
+            if d.exists():
+                done += 1
+            elif jsonl.exists() and jsonl.stat().st_size > 0:
+                partial += 1
+            if missing_ayahs(out_dir, src, s, 1, SUWAR[s - 1][0], avail, prefilter, False):
+                todo += 1
+        print(f"  {src:24s} done {done:3d}/{len(surahs)}   partial {partial:3d}   "
+              f"need download {todo:3d}")
+
+
+def download_all(session, args, out_dir: Path, todo: list, avail: Availability,
+                 partial: bool) -> tuple[int, int, int]:
+    """Run scrape_surah for every pending (src, surah) on a thread pool → (ok, skipped, failed)."""
+    pool = ThreadPoolExecutor(max_workers=args.workers)
+    futs = {
+        pool.submit(scrape_surah, session, args.base, out_dir, src, s, lo, hi, avail,
+                    args.delay, args.force, not args.no_prefilter, partial): (src, s)
+        for src, s, lo, hi, _n in todo
+    }
+    ok = skipped = failed = 0
+    try:
+        for i, f in enumerate(as_completed(futs), 1):
+            src, s = futs[f]
+            try:
+                res = f.result()
+                if res["status"] == "skipped":
+                    skipped += 1
+                else:
+                    ok += 1
+                log(f"  [{i}/{len(todo)}] {src} / {s:03d} {SUWAR[s-1][1]}: "
+                    f"{res['status']} ({res['fetched']} requests)")
+            except Exception as e:
+                failed += 1
+                log(f"  [{i}/{len(todo)}] {src} / {s:03d}: ERROR {e}")
+    except KeyboardInterrupt:
+        log("\n[!] Interrupted — cancelling queued work. Progress saved; re-run to resume.")
+        pool.shutdown(wait=False, cancel_futures=True)
+        sys.exit(1)
+    pool.shutdown(wait=True)
+    return ok, skipped, failed
 
 
 def main():
@@ -1494,7 +1568,9 @@ def main():
     p.add_argument("--out_dir", default="./tafsir_output")
     p.add_argument("--workers", type=int, default=4, help="parallel (source, surah) tasks")
     p.add_argument("--delay", type=float, default=0.3, help="pause after each request (per worker)")
-    p.add_argument("--force", action="store_true", help="re-scrape even if already done")
+    p.add_argument("--force", action="store_true",
+                   help="re-download even if already saved (with --ayahs: only that range). "
+                        "Without it, saved data is never requested again")
     p.add_argument("--no_prefilter", action="store_true",
                    help="request every ayah even if sources.json says there's no data")
     p.add_argument("--base", default=BASE, help=argparse.SUPPRESS)
@@ -1516,18 +1592,19 @@ def main():
     p.add_argument("--tafsir_font", default="KFGQPC Uthman Taha Naskh",
                    help="DOCX font for tafsir names and tafsir text (default 'KFGQPC Uthman Taha Naskh'); "
                         "Quran verses (﴿…﴾ heading and quotations) stay in --font")
-    p.add_argument("--tafsir_title_size", type=float, default=20,
-                   help="DOCX size in pt of the tafsir names in --combine files (default 20)")
-    p.add_argument("--tafsir_bold", action=argparse.BooleanOptionalAction, default=False,
-                   help="bold tafsir text in --combine DOCX files (default off; --tafsir_bold to enable)")
+    p.add_argument("--tafsir_title_size", type=float, default=None,
+                   help="--combine only: DOCX size in pt of the tafsir names (default 20)")
+    p.add_argument("--tafsir_bold", action=argparse.BooleanOptionalAction, default=None,
+                   help="--combine only: bold tafsir text in DOCX files (default off; "
+                        "--tafsir_bold to enable)")
     p.add_argument("--line_spacing", type=float, default=0.9,
                    help="DOCX line spacing multiple (default 0.9; 1.0 = font's natural height, 1.25 = airy)")
     p.add_argument("--page_bg", default="F3EEE2",
                    help="hex colour for the WHOLE DOCX page background (default F3EEE2, soft "
                         "paper); use 'none' for a white page")
     p.add_argument("--verse_color", default="0F6B9C",
-                   help="hex colour for ﴿…﴾ quotations inside the tafsir text "
-                        "(DOCX + MD). Default 0F6B9C; use 'none' to disable")
+                   help="hex colour for ﴿…﴾ quotations inside the tafsir text (DOCX; Markdown only "
+                        "with --md_verse_style html). Default 0F6B9C; use 'none' to disable")
     p.add_argument("--with_quran", action=argparse.BooleanOptionalAction, default=True,
                    help="print the ﴿ayah﴾ heading above each entry (default on; "
                         "--no-with_quran to disable)")
@@ -1549,16 +1626,32 @@ def main():
                         "<out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/ (one folder per combination). Sources are scraped if "
                         "missing, so it works while downloading or after.")
     p.add_argument("--combine_only", action="store_true",
-                   help="with --combine: skip the individual per-source outputs")
+                   help="requires --combine: build ONLY the combined files (skip the "
+                        "individual per-source outputs; --json/--txt are then ignored)")
     p.add_argument("--sources_file", default=None,
                    help="extra JSON of Arabic source titles (default: sources_ar.json next to the script)")
     p.add_argument("--list_sources", action="store_true", help="list known source slugs and exit")
     p.add_argument("--status", action="store_true", help="show progress and exit")
-    p.add_argument("--build_only", action="store_true",
-                   help="NO network: skip scraping and build md/docx/json/txt (and --merge / "
-                        "--combine files) from the already saved raw/ data")
     args = p.parse_args()
     args.font = args.font.split(",")[0].strip() or "Kitab"   # Word takes ONE font name, not a CSS stack
+
+    # ── flag coherence ────────────────────────────────────────────────────
+    if args.combine_only and not args.combine:
+        p.error("--combine_only needs --combine SLUGS")
+    if args.combine is None and (args.tafsir_title_size is not None or args.tafsir_bold is not None):
+        log("[!] --tafsir_title_size / --tafsir_bold only affect --combine DOCX files — ignored")
+    args.tafsir_title_size = 20 if args.tafsir_title_size is None else args.tafsir_title_size
+    args.tafsir_bold = bool(args.tafsir_bold)
+    if args.combine and (args.json or args.txt):
+        log("[!] --json/--txt are only built for the individual per-source files, "
+            "not for --combine (combined output is md/docx only)"
+            + (" — with --combine_only they are ignored" if args.combine_only else ""))
+    if args.docx and _docxlib is None:
+        log("[!] python-docx not installed — DOCX output disabled (pip install python-docx)")
+        args.docx = False
+    if not (args.md or args.docx or args.json or args.txt):
+        log("[!] no output format enabled (--no-md/--no-docx without --json/--txt): "
+            "the script will only download")
 
     global VERSE_COLOR, VERSE_HEURISTIC, MD_VERSE_STYLE, LIGATURES, PAGE_BG, LINE_SPACING, TAFSIR_FONT
     LINE_SPACING = args.line_spacing
@@ -1599,76 +1692,80 @@ def main():
     if args.ayahs and len(surahs) != 1:
         p.error("--ayahs only works with a single --surah")
     if args.ayahs:
-        parse_ayah_range(args.ayahs, surahs[0])   # validate early (also with --build_only)
+        parse_ayah_range(args.ayahs, surahs[0])   # validate early
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    prefilter = not args.no_prefilter
+    # cached sources.json (from an earlier run) lets us decide what is missing WITHOUT the network
+    avail = Availability((load_json(out_dir / "sources.json", {}) or None) if prefilter else None)
+
     if args.status:
-        print_status(out_dir, sources, surahs)
+        print_status(out_dir, sources, surahs, avail, prefilter)
         return
     if args.debug_marks:
         debug_marks(out_dir, sources, surahs)
         return
 
-    quran = None
-    if args.build_only:
-        report_incomplete(out_dir, sources, surahs)
-        if args.with_quran:
-            quran = load_json(out_dir / "quran.json")
-            if not quran:
-                log("[!] --build_only: no cached quran.json — building without ﴿ayah﴾ headings "
-                    "(run once without --build_only to cache it)")
-        ok = failed = skipped = 0
+    partial = bool(args.ayahs)
+    session = None
+
+    def get_session():
+        nonlocal session
+        if session is None:
+            session = make_session(args.ua)
+        return session
+
+    # ── 1. plan, from disk only: which (source, surah) really need the network? ──
+    todo = []       # (src, surah, lo, hi, n_missing_ayahs)
+    complete = 0
+    for src in sources:
+        for s in surahs:
+            lo, hi = parse_ayah_range(args.ayahs, s)
+            miss = missing_ayahs(out_dir, src, s, lo, hi, avail, prefilter, args.force)
+            if miss:
+                todo.append((src, s, lo, hi, len(miss)))
+                continue
+            complete += 1
+            if not partial:   # everything is saved but the marker is missing → repair it
+                jsonl, done = raw_paths(out_dir, src, s)
+                if not done.exists():
+                    jsonl.touch()
+                    done.write_text(time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="utf-8")
+
+    total = len(sources) * len(surahs)
+    if todo:
+        log(f"[*] {total} (source, surah) pair(s): {complete} already on disk, {len(todo)} to "
+            f"download (up to {sum(t[4] for t in todo)} ayah(s) not saved yet), {args.workers} workers")
     else:
-        session = make_session(args.ua)
+        log(f"[*] {total} (source, surah) pair(s): everything is already on disk — nothing to download")
+
+    # ── 2. network, only if something is missing ──
+    ok = failed = 0
+    skipped = complete
+    if todo:
         if args.no_prefilter:
             atomic_write_json(out_dir / "sources.json",
                               merge_titles(load_json(out_dir / "sources.json", {}) or {}))
-        avail = Availability(None if args.no_prefilter else fetch_sources_meta(session, args.base, out_dir))
-        if args.with_quran:
+        else:
+            avail = Availability(fetch_sources_meta(get_session(), args.base, out_dir))
+
+    quran = None
+    if args.with_quran:
+        quran = load_json(out_dir / "quran.json")
+        if not quran:   # the only request a fully-downloaded run can still make (once, then cached)
             try:
-                quran = load_quran(session, args.base, out_dir)
+                quran = load_quran(get_session(), args.base, out_dir)
             except Exception as e:
                 log(f"[!] could not load quran.json ({e}) — continuing without ﴿ayah﴾ headings")
 
-        partial = bool(args.ayahs)
-        tasks = []
-        for src in sources:
-            for s in surahs:
-                lo, hi = parse_ayah_range(args.ayahs, s)
-                tasks.append((src, s, lo, hi))
-        log(f"[*] {len(sources)} source(s) × {len(surahs)} surah(s) = {len(tasks)} task(s), "
-            f"{args.workers} workers")
+    if todo:
+        ok, sk, failed = download_all(get_session(), args, out_dir, todo, avail, partial)
+        skipped += sk
 
-        pool = ThreadPoolExecutor(max_workers=args.workers)
-        futs = {
-            pool.submit(scrape_surah, session, args.base, out_dir, src, s, lo, hi, avail,
-                        args.delay, args.force, not args.no_prefilter, partial): (src, s)
-            for src, s, lo, hi in tasks
-        }
-        ok = failed = skipped = 0
-        try:
-            for i, f in enumerate(as_completed(futs), 1):
-                src, s = futs[f]
-                try:
-                    res = f.result()
-                    if res["status"] == "skipped":
-                        skipped += 1
-                    else:
-                        ok += 1
-                    log(f"  [{i}/{len(tasks)}] {src} / {s:03d} {SUWAR[s-1][1]}: "
-                        f"{res['status']} ({res['fetched']} requests)")
-                except Exception as e:
-                    failed += 1
-                    log(f"  [{i}/{len(tasks)}] {src} / {s:03d}: ERROR {e}")
-        except KeyboardInterrupt:
-            log("\n[!] Interrupted — cancelling queued work. Progress saved; re-run to resume.")
-            pool.shutdown(wait=False, cancel_futures=True)
-            sys.exit(1)
-        pool.shutdown(wait=True)
-        if failed:
-            report_incomplete(out_dir, sources, surahs)
+    if not partial:
+        report_incomplete(out_dir, sources, surahs)
 
     log("[*] Building outputs ...")
     if not (combine_order and args.combine_only):
@@ -1677,7 +1774,10 @@ def main():
     if combine_order:
         build_combined(out_dir, combine_order, surahs, args, quran)
 
-    log(f"[✓] finished: ok={ok} skipped={skipped} failed={failed} → {out_dir}")
+    n_req = net_requests()
+    log(f"[✓] finished: downloaded={ok} already-on-disk={skipped} failed={failed} | "
+        f"network requests: {n_req}" + (" (everything was already on disk)" if n_req == 0 else "")
+        + f" → {out_dir}")
     if failed:
         log("    re-run the same command to retry failed (source, surah) tasks.")
 
