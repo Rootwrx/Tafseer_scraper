@@ -845,10 +845,23 @@ def missing_ayahs(out_dir: Path, src: str, surah: int, a_lo: int, a_hi: int,
             if a not in covered and (not prefilter or avail.has(src, abs_id(surah, a)))]
 
 
+def has_material(avail: Availability, src: str, surah: int, prefilter: bool,
+                 lo: int = 1, hi: int | None = None) -> bool:
+    """False when sources.json says this source has NO material for any ayah in lo..hi
+    (e.g. a source that only covers some surahs).  Such surahs are skipped completely:
+    no request, no empty .jsonl, no .done marker."""
+    if not prefilter:
+        return True
+    hi = SUWAR[surah - 1][0] if hi is None else hi
+    return any(avail.has(src, abs_id(surah, a)) for a in range(lo, hi + 1))
+
+
 def scrape_surah(session, base: str, out_dir: Path, src: str, surah: int,
                  a_lo: int, a_hi: int, avail: Availability, delay: float,
                  force: bool, prefilter: bool, partial: bool) -> dict:
     """Sequentially walk one surah for one source (jumping over grouped ayahs)."""
+    if not has_material(avail, src, surah, prefilter, a_lo, a_hi):
+        return {"src": src, "surah": surah, "status": "no material", "fetched": 0}
     jsonl, done = raw_paths(out_dir, src, surah)
     if force:
         if partial:   # only forget what overlaps the requested range; keep the rest of the surah
@@ -1678,11 +1691,13 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
                                 title_size=args.tafsir_title_size, bold=args.tafsir_bold)
 
 
-def report_incomplete(out_dir: Path, sources: list[str], surahs: list[int]) -> None:
+def report_incomplete(out_dir: Path, sources: list[str], surahs: list[int],
+                      avail: Availability, prefilter: bool) -> None:
     """Warn (before building) about surahs that were never fully downloaded, so a merged
     file is never silently incomplete."""
     for src in sources:
-        missing = [s for s in surahs if not raw_paths(out_dir, src, s)[1].exists()]
+        missing = [s for s in surahs if has_material(avail, src, s, prefilter)
+                   and not raw_paths(out_dir, src, s)[1].exists()]
         if missing:
             shown = ", ".join(str(s) for s in missing[:20]) + (" …" if len(missing) > 20 else "")
             log(f"  [!] {src_title(src)}: {len(missing)} surah(s) not marked complete "
@@ -1694,8 +1709,11 @@ def print_status(out_dir: Path, sources: list[str], surahs: list[int],
                  avail: Availability, prefilter: bool) -> None:
     """Progress from disk only (no network)."""
     for src in sources:
-        done = partial = todo = 0
+        done = partial = todo = nomat = 0
         for s in surahs:
+            if not has_material(avail, src, s, prefilter):
+                nomat += 1
+                continue
             jsonl, d = raw_paths(out_dir, src, s)
             if d.exists():
                 done += 1
@@ -1704,7 +1722,7 @@ def print_status(out_dir: Path, sources: list[str], surahs: list[int],
             if missing_ayahs(out_dir, src, s, 1, SUWAR[s - 1][0], avail, prefilter, False):
                 todo += 1
         print(f"  {src:24s} done {done:3d}/{len(surahs)}   partial {partial:3d}   "
-              f"need download {todo:3d}")
+              f"need download {todo:3d}   no material {nomat:3d}")
 
 
 def download_all(session, args, out_dir: Path, todo: list, avail: Availability,
@@ -1722,7 +1740,7 @@ def download_all(session, args, out_dir: Path, todo: list, avail: Availability,
             src, s = futs[f]
             try:
                 res = f.result()
-                if res["status"] == "skipped":
+                if res["status"] in ("skipped", "no material"):
                     skipped += 1
                 else:
                     ok += 1
@@ -1924,9 +1942,13 @@ def main():
     # ── 1. plan, from disk only: which (source, surah) really need the network? ──
     todo = []       # (src, surah, lo, hi, n_missing_ayahs)
     complete = 0
+    no_material = 0
     for src in sources:
         for s in surahs:
             lo, hi = parse_ayah_range(args.ayahs, s)
+            if not has_material(avail, src, s, prefilter, lo, hi):
+                no_material += 1   # the source has nothing here: create NO files for it
+                continue
             miss = missing_ayahs(out_dir, src, s, lo, hi, avail, prefilter, args.force)
             if miss:
                 todo.append((src, s, lo, hi, len(miss)))
@@ -1939,11 +1961,12 @@ def main():
                     done.write_text(time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="utf-8")
 
     total = len(sources) * len(surahs)
+    nm = f", {no_material} with no material in the source (skipped)" if no_material else ""
     if todo:
-        log(f"[*] {total} (source, surah) pair(s): {complete} already on disk, {len(todo)} to "
+        log(f"[*] {total} (source, surah) pair(s): {complete} already on disk{nm}, {len(todo)} to "
             f"download (up to {sum(t[4] for t in todo)} ayah(s) not saved yet), {args.workers} workers")
     else:
-        log(f"[*] {total} (source, surah) pair(s): everything is already on disk — nothing to download")
+        log(f"[*] {total} (source, surah) pair(s): everything is already on disk{nm} — nothing to download")
 
     # ── 2. network, only if something is missing ──
     ok = failed = 0
@@ -1954,6 +1977,10 @@ def main():
                               merge_titles(load_json(out_dir / "sources.json", {}) or {}))
         else:
             avail = Availability(fetch_sources_meta(get_session(), args.base, out_dir))
+            # sources.json is now fresh: drop surahs the source has no material for
+            kept = [t for t in todo if has_material(avail, t[0], t[1], prefilter, t[2], t[3])]
+            no_material += len(todo) - len(kept)
+            todo = kept
 
     quran = None
     if args.with_quran:
@@ -1969,7 +1996,7 @@ def main():
         skipped += sk
 
     if not partial:
-        report_incomplete(out_dir, sources, surahs)
+        report_incomplete(out_dir, sources, surahs, avail, prefilter)
 
     if args.download_only:
         log("[*] --download_only: raw data saved, nothing built")
