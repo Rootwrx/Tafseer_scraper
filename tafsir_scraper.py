@@ -27,20 +27,24 @@ Design (mirrors the Shamela scraper)
                   instead of re-requesting 34…54.
   • Skips ayahs a source has no data for (keys_flag), unless --no_prefilter.
 
-Output tree
+Output tree   (same layout as transform.py:  <group>/<category>/<source>)
 ───────────
-    <out_dir>/<عنوان المصدر>/raw/surah_053.jsonl     raw records (source of truth)
-    <out_dir>/<عنوان المصدر>/raw/surah_053.done      completion marker
+    <out_dir>/تفسير/أمّهات/تفسير ابن كثير/raw/surah_053.jsonl   raw records (source of truth)
+    <out_dir>/تفسير/أمّهات/تفسير ابن كثير/raw/surah_053.done    completion marker
+    <out_dir>/علوم/غريب ومعاني/معاني الزجاج/...                 (the "uloom" tab)
     (output files are built ONLY when asked for — no format flag = download only)
-    <out_dir>/<عنوان المصدر>/md/سورة النجم.md        with --md    per-surah Markdown
-    <out_dir>/<عنوان المصدر>/docx/سورة النجم.docx    with --docx  per-surah Word
-    <out_dir>/<عنوان المصدر>/json/سورة النجم.json    with --json
-    <out_dir>/<عنوان المصدر>/txt/سورة النجم.txt      with --txt
-    --merge → ONE file per format directly inside <out_dir>/<عنوان المصدر>/ :
+    <SRC>/md/سورة النجم.md        with --md    per-surah Markdown
+    <SRC>/docx/سورة النجم.docx    with --docx  per-surah Word
+    <SRC>/json/سورة النجم.json    with --json
+    <SRC>/txt/سورة النجم.txt      with --txt
+      where <SRC> = <out_dir>/<group>/<category>/<عنوان المصدر>
+    Sources outside tafsir/uloom (e.g. iraab-graphs) stay at <out_dir>/<عنوان المصدر>/.
+    --layout flat  → the old  <out_dir>/<عنوان المصدر>/  layout (no group/category folders).
+    --merge → ONE file per format directly inside <SRC>/ :
         سورة الفاتحة إلى سورة الناس.docx | القرآن كاملا.docx | سورة النجم إلى سورة الرحمن.md
         سور 1-3،53،112-114.docx          (non-contiguous selections are named by number)
     <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/docx/سورة النجم.docx   with --combine
-    (old <slug>/ folders are renamed to the Arabic source title automatically)
+    (old flat <slug>/ or <title>/ folders are moved into <group>/<category>/<title> automatically)
     <out_dir>/quran.json                    (cached; used for ﴿ayah﴾ headings)
 
 Usage
@@ -97,6 +101,7 @@ import re
 import sys
 import threading
 import time
+from html.parser import HTMLParser
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -210,7 +215,7 @@ GROUPS = {"tafsir": TAFSIR_SOURCES, "uloom": ULOOM_SOURCES}
 ALL_SOURCES = {**TAFSIR_SOURCES, **ULOOM_SOURCES, **EXTRA_SOURCES}
 
 # ── external Arabic registry (sources_ar.json, next to this script / in the cwd) ──
-# {slug: {"title": "<short Arabic title>", "group": "tafsir|uloom", "enabled": true, ...}}
+# {slug: {"title": "<short Arabic title>", "group": "tafsir|uloom", "category": "<optional>", "enabled": true, ...}}
 # Edit that file to add a new source: it is merged into the built-in lists above.
 SOURCES_FILE = None   # set from --sources_file
 
@@ -232,6 +237,8 @@ def load_source_registry(extra: str | None = None) -> int:
             if not title:
                 continue
             ALL_SOURCES[slug] = title
+            if isinstance(meta, dict) and meta.get("category"):
+                CATEGORY_OVERRIDE[slug] = str(meta["category"])
             grp = meta.get("group") if isinstance(meta, dict) else None
             if grp in GROUPS and meta.get("enabled", True) and slug not in EXTRA_SOURCES:
                 GROUPS[grp].setdefault(slug, title)
@@ -267,12 +274,13 @@ def safe_name(text: str, limit: int = 150) -> str:
 
 
 def _adopt(old: Path, new: Path) -> Path:
-    """Rename a legacy (English-named) folder to its Arabic name once, then return `new`."""
+    """Rename / move a legacy folder to its new place once, then return `new`."""
     with _fs_lock:
         if old != new and old.is_dir() and not new.exists():
             try:
+                new.parent.mkdir(parents=True, exist_ok=True)   # <group>/<category>/ may not exist yet
                 old.rename(new)
-                log(f"  [folders] renamed {old.name} → {new.name}")
+                log(f"  [folders] moved {old.name} → {new.relative_to(old.parent) if old.parent in new.parents else new.name}")
             except OSError as e:
                 log(f"[!] could not rename {old} → {new} ({e}); using the old folder")
                 return old
@@ -280,9 +288,155 @@ def _adopt(old: Path, new: Path) -> Path:
     return new
 
 
+# ─── <group>/<category>/<source> layout (same rules as transform.py) ───────────────
+GROUP_DIR = {"tafsir": "تفسير", "uloom": "علوم"}     # folder names of the two site tabs
+UNCATEGORIZED = "غير مصنف"
+LAYOUT = "grouped"          # set from --layout: grouped | flat
+
+# the site's own category tabs (same order as on tafsir.app); --html re-reads them from a saved page
+CATEGORIES = {
+    "tafsir": {
+        "أمّهات": ["tabari", "ibn-katheer", "qurtubi", "baghawi"],
+        "جمع الأقوال": ["zad-almaseer", "almawirdee"],
+        "منتقاة": ["ibn-alqayyim", "ibn-taymiyyah"],
+        "عامّة": ["samaani", "makki", "mahasin-altaweel", "althaalabi", "samarqandi",
+                  "althalabi", "fath-albayan", "fath-alqadeer", "altasheel"],
+        "موسوعات": ["alaloosi", "alrazi"],
+        "أخرى": ["adwaa-albayan", "nathm-aldurar"],
+        "لغة وبلاغة": ["ibn-aashoor", "ibn-atiyah", "albahr-almuheet", "albaseet",
+                       "abu-alsuod", "kashaf"],
+        "معاصرة": ["muyassar", "mukhtasar", "saadi", "aysar-altafasir",
+                   "tadabbur-wa-amal", "ibn-uthaymeen"],
+        "مركَّزة العبارة": ["jalalayn", "iejee", "albaydawee", "alnasafi", "alwajeez", "zimneen"],
+        "آثار": ["mathoor", "aldur-almanthoor", "ibn-abi-hatim", "muqatil", "qatada"],
+    },
+    "uloom": {
+        "غريب ومعاني": ["siraaj-ghareeb", "almuyassar-ghareeb", "ghareeb-ibn-qutaybah",
+                        "altibyan-ghreeb", "zajjaj", "nahaas-meanings", "farraa",
+                        "majaz-alquran", "akhfash"],
+        "أسباب النزول": ["wahidi-asbab"],
+        "إعراب ولغة": ["aliraab-almuyassar", "iraab-daas", "aljadwal", "aldur-almasoon",
+                       "lubab", "iraab-aldarweesh", "mujtaba-mushkil-iraab",
+                       "iraab-alnahas", "ayah-morph", "iraab-graphs"],
+        "قراءات": ["qiraat-almawsoah", "tahbeer-altayseer", "alnashir", "mafateeh-alaghanee"],
+        "أحكام": ["ahkam-ibn-alarabee", "aljasas", "ilkia-alharrasee", "ahkam-altarayfi",
+                  "alikleel", "eedah-naskh-mansukh"],
+    },
+}
+_CAT_INDEX: dict[str, dict[str, str]] = {}
+CATEGORY_OVERRIDE: dict[str, str] = {}   # slug -> category, from sources_ar.json ("category" key)
+SITE_META: dict = {}                     # cached sources.json (fallback for slugs not built in)
+
+
+def set_categories(cats: dict | None = None) -> None:
+    """(Re)build slug → category from CATEGORIES, or from a table parsed out of a saved page."""
+    _CAT_INDEX.clear()
+    for g, d in (cats or CATEGORIES).items():
+        _CAT_INDEX[g] = {s: c for c, slugs in d.items() for s in slugs}
+
+
+set_categories()
+
+
+def set_site_meta(raw) -> None:
+    global SITE_META
+    SITE_META = raw if isinstance(raw, dict) else {}
+
+
+def source_group(src: str) -> str | None:
+    """'tafsir' | 'uloom' | None (None = stays at the top level, e.g. iraab-graphs)."""
+    if src in EXTRA_SOURCES:
+        return None
+    if src in TAFSIR_SOURCES:
+        return "tafsir"
+    if src in ULOOM_SOURCES:
+        return "uloom"
+    meta = SITE_META.get(src)
+    g = meta.get("group") if isinstance(meta, dict) else None
+    return g if g in GROUP_DIR else None
+
+
+def source_category(src: str) -> str:
+    if src in CATEGORY_OVERRIDE:
+        return safe_name(CATEGORY_OVERRIDE[src])
+    meta = SITE_META.get(src)
+    if isinstance(meta, dict):
+        for k in ("category", "التصنيف"):
+            if meta.get(k):
+                return safe_name(str(meta[k]))
+    return _CAT_INDEX.get(source_group(src), {}).get(src, UNCATEGORIZED)
+
+
+def layout_path(out_dir: Path, src: str) -> Path:
+    """Where a source lives:  <out>/<group>/<category>/<title>   (or <out>/<title> if flat)."""
+    name = safe_name(src_title(src))
+    g = source_group(src)
+    if LAYOUT == "flat" or g is None:
+        return out_dir / name
+    return out_dir / GROUP_DIR[g] / source_category(src) / name
+
+
+def _legacy_names(src: str) -> list[str]:
+    """Top-level folder names an earlier version / transform may have left behind."""
+    names = [safe_name(src_title(src)), src]
+    meta = SITE_META.get(src)
+    if isinstance(meta, dict):
+        for k in ("short_name", "الاسم"):
+            if meta.get(k):
+                names.append(safe_name(meta[k]))
+    return list(dict.fromkeys(names))
+
+
 def src_dir(out_dir: Path, src: str) -> Path:
-    """<out_dir>/<Arabic source title>/   (was <out_dir>/<slug>/)"""
-    return _adopt(out_dir / src, out_dir / safe_name(src_title(src)))
+    """<out_dir>/<group>/<category>/<Arabic source title>/
+    An old flat folder (<out_dir>/<title>/ or <out_dir>/<slug>/) is moved there once."""
+    target = layout_path(out_dir, src)
+    if not target.is_dir():
+        reserved = set(GROUP_DIR.values()) | {COMBINED_DIR}
+        for name in _legacy_names(src):
+            old = out_dir / name
+            if name not in reserved and old != target and old.is_dir():
+                return _adopt(old, target)
+    _adopt(target, target)      # just creates the parent folders
+    return target
+
+
+class _PageParser(HTMLParser):
+    """Reads the tab panes of a saved tafsir.app page: <h3>category</h3> then <a data-src=slug>."""
+    _PANES = {"tafsir-grp": "tafsir", "uloom-grp": "uloom"}
+
+    def __init__(self):
+        super().__init__()
+        self.pane = self.cat = None
+        self.in_h3 = False
+        self.buf = ""
+        self.cats: dict[str, dict[str, list[str]]] = {"tafsir": {}, "uloom": {}}
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "div" and (a.get("id") or "").endswith("-grp"):
+            self.pane, self.cat = self._PANES.get(a["id"]), None
+        elif tag == "h3":
+            self.in_h3, self.buf = True, ""
+        elif tag == "a" and self.pane and self.cat and a.get("data-src"):
+            lst = self.cats[self.pane].setdefault(self.cat, [])
+            if a["data-src"] not in lst:
+                lst.append(a["data-src"])
+
+    def handle_data(self, data):
+        if self.in_h3:
+            self.buf += data
+
+    def handle_endtag(self, tag):
+        if tag == "h3" and self.in_h3:
+            self.in_h3 = False
+            self.cat = " ".join(self.buf.split()) or None
+
+
+def parse_categories_html(path: Path) -> dict:
+    p = _PageParser()
+    p.feed(Path(path).read_text(encoding="utf-8"))
+    return p.cats
 
 
 def sub_dir(parent: Path, key: str) -> Path:
@@ -1843,6 +1997,12 @@ def main():
     p.add_argument("--allow_unknown", action="store_true",
                    help="do not stop on a source name that is neither built-in nor listed in the "
                         "site's sources.json (default: unknown names are rejected up front)")
+    p.add_argument("--layout", choices=["grouped", "flat"], default="grouped",
+                   help="grouped (default): <out_dir>/<group>/<category>/<source>/ (same as "
+                        "transform.py); flat: the old <out_dir>/<source>/")
+    p.add_argument("--html", default=None, metavar="FILE",
+                   help="saved tafsir.app page: read the category tabs from it instead of the "
+                        "built-in table")
     p.add_argument("--base", default=BASE, help=argparse.SUPPRESS)
     p.add_argument("--user-agent", "--ua", dest="ua", default=None)
 
@@ -1941,6 +2101,14 @@ def main():
     VERSE_COLOR = None if args.verse_color.lower() in ("none", "off", "") else args.verse_color.lstrip("#").upper()
 
     load_source_registry(args.sources_file)
+    global LAYOUT
+    LAYOUT = args.layout
+    if args.html:
+        cats = parse_categories_html(Path(args.html))
+        if not any(cats.values()):
+            p.error(f"no categories found in {args.html}")
+        set_categories(cats)
+        log(f"[*] categories read from {args.html}")
 
     if args.list_sources:
         for grp, d in GROUPS.items():
@@ -1974,6 +2142,7 @@ def main():
 
     prefilter = not args.no_prefilter
     # cached sources.json (from an earlier run) lets us decide what is missing WITHOUT the network
+    set_site_meta(load_json(out_dir / "sources.json", {}))   # group/category fallback for src_dir()
     avail = Availability((load_json(out_dir / "sources.json", {}) or None) if prefilter else None)
 
     if args.status:
@@ -1994,6 +2163,7 @@ def main():
 
     # a slug the site does not have stops here — before any folder, file or ayah request
     validate_sources(get_session, args.base, out_dir, sources, args.allow_unknown)
+    set_site_meta(load_json(out_dir / "sources.json", {}))
     if prefilter:   # the cached sources.json may have just been refreshed
         avail = Availability(load_json(out_dir / "sources.json", {}) or None)
 
@@ -2034,7 +2204,9 @@ def main():
             atomic_write_json(out_dir / "sources.json",
                               merge_titles(load_json(out_dir / "sources.json", {}) or {}))
         else:
-            avail = Availability(fetch_sources_meta(get_session(), args.base, out_dir))
+            meta = fetch_sources_meta(get_session(), args.base, out_dir)
+            set_site_meta(meta)
+            avail = Availability(meta)
             # sources.json is now fresh: drop surahs the source has no material for
             kept = [t for t in todo if has_material(avail, t[0], t[1], prefilter, t[2], t[3])]
             no_material += len(todo) - len(kept)
