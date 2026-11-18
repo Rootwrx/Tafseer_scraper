@@ -83,6 +83,7 @@ Usage
     # extras
     python tafsir_scraper.py --src saadi --surah 53 --json --txt
     python tafsir_scraper.py --list_sources
+    #   an unknown source name is rejected up front ("did you mean …"); --allow_unknown overrides
     python tafsir_scraper.py --src saadi --surah 53 --force      # re-download even if saved
     python tafsir_scraper.py --src saadi --surah all --status    # progress only (no network)
 
@@ -482,6 +483,56 @@ def fetch_sources_meta(session, base: str, out_dir: Path) -> dict:
     data = merge_titles(data)
     atomic_write_json(cache, data)
     return data
+
+
+def validate_sources(get_session, base: str, out_dir: Path, sources: list[str],
+                     allow_unknown: bool) -> None:
+    """Stop BEFORE any request / folder / file is made for a slug that does not exist.
+
+    An unknown slug used to be "still tried": get.php answers with empty data for every
+    ayah, and the script saved those empty records and marked the surah .done as if it
+    were a real source.  A slug is accepted when it is in the built-in lists /
+    sources_ar.json, or listed in the site's own sources.json (cached copy first, then a
+    fresh download — at most ONE request, and only when something is not known locally).
+    """
+    import difflib
+    cache = out_dir / "sources.json"
+    cached = load_json(cache, {}) or {}
+    unknown = [s for s in sources if s not in ALL_SOURCES and s not in cached]
+    if not unknown:
+        return
+    site = None
+    try:
+        site = get_json(get_session(), f"{base}/sources/sources.json", {"json_rev": "1"})
+    except Exception as e:
+        log(f"[!] could not download sources.json to verify: {', '.join(unknown)} ({e})")
+    listed = set(site) if isinstance(site, dict) and site else None
+    if listed is None:
+        if allow_unknown:
+            log("[!] cannot verify the source name(s) — continuing because of --allow_unknown")
+            return
+        raise SystemExit(
+            f"[!] cannot verify source(s): {', '.join(unknown)} — not in the built-in list and "
+            f"sources.json could not be downloaded.\n    Check the spelling and your connection, "
+            f"or pass --allow_unknown to try anyway.")
+    atomic_write_json(cache, merge_titles(site))      # refresh the cache while we have it
+    bad = [s for s in unknown if s not in listed]
+    if not bad:
+        return
+    cands = sorted(set(ALL_SOURCES) | listed)
+    lines = []
+    for s in bad:
+        near = difflib.get_close_matches(s, cands, n=3, cutoff=0.6)
+        names = ", ".join(f"{x} ({src_title(x)})" for x in near)
+        lines.append(f"    {s}" + (f"   — did you mean: {names}?" if near else ""))
+    if allow_unknown:
+        log("[!] source(s) not found on the site — continuing because of --allow_unknown:\n"
+            + "\n".join(lines))
+        return
+    raise SystemExit(
+        "[!] unknown source(s) — they do not exist on tafsir.app, nothing was downloaded:\n"
+        + "\n".join(lines)
+        + "\n    (--list_sources shows the known slugs; --allow_unknown skips this check)")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -904,8 +955,11 @@ def scrape_surah(session, base: str, out_dir: Path, src: str, surah: int,
                 {"src": src, "s": surah, "a": a, "ver": 1},
                 referer=f"{base}/{src}/{surah}/{a}",
             )
-            data = resp.get("data") if isinstance(resp, dict) else None
-            data = data if isinstance(data, str) else ""
+            if not isinstance(resp, dict) or "data" not in resp:
+                # an error / unexpected JSON must never be stored as "this ayah is empty"
+                raise RuntimeError(f"unexpected reply for {src} {surah}:{a} "
+                                   f"({str(resp)[:100]!r}) — not saved")
+            data = resp["data"] if isinstance(resp["data"], str) else ""
 
             start = int(resp.get("ayahs_start") or a) if isinstance(resp, dict) else a
             extra = int(resp.get("count") or 0) if isinstance(resp, dict) else 0
@@ -923,6 +977,11 @@ def scrape_surah(session, base: str, out_dir: Path, src: str, surah: int,
                 time.sleep(delay)
 
     if not partial:  # only mark complete when the whole surah was requested
+        if prefilter and records and all(not (r.get("data") or "").strip() for r in records):
+            # sources.json promised material here, yet every reply was empty → something is
+            # wrong (bad / removed source, blocked).  Keep NOTHING so a re-run asks again.
+            jsonl.write_text("", encoding="utf-8")
+            return {"src": src, "surah": surah, "status": "empty", "fetched": fetched}
         done.write_text(time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="utf-8")
     return {"src": src, "surah": surah, "status": "done", "fetched": fetched}
 
@@ -1744,6 +1803,11 @@ def download_all(session, args, out_dir: Path, todo: list, avail: Availability,
             src, s = futs[f]
             try:
                 res = f.result()
+                if res["status"] == "empty":
+                    failed += 1
+                    log(f"  [{i}/{len(todo)}] {src} / {s:03d} {SUWAR[s-1][1]}: EMPTY — every reply "
+                        f"had no text, nothing saved (wrong or removed source?)")
+                    continue
                 if res["status"] in ("skipped", "no material"):
                     skipped += 1
                 else:
@@ -1776,6 +1840,9 @@ def main():
                         "Without it, saved data is never requested again")
     p.add_argument("--no_prefilter", action="store_true",
                    help="request every ayah even if sources.json says there's no data")
+    p.add_argument("--allow_unknown", action="store_true",
+                   help="do not stop on a source name that is neither built-in nor listed in the "
+                        "site's sources.json (default: unknown names are rejected up front)")
     p.add_argument("--base", default=BASE, help=argparse.SUPPRESS)
     p.add_argument("--user-agent", "--ua", dest="ua", default=None)
 
@@ -1895,9 +1962,6 @@ def main():
     sources = list(dict.fromkeys(sources))
     if not sources or not args.surah:
         p.error("need --src and/or --group, plus --surah (see --list_sources)")
-    unknown = [s for s in sources if s not in ALL_SOURCES]
-    if unknown:
-        log(f"[!] not in the built-in list (will still be tried): {', '.join(unknown)}")
 
     surahs = parse_surah_spec(args.surah)
     if args.ayahs and len(surahs) != 1:
@@ -1927,6 +1991,11 @@ def main():
         if session is None:
             session = make_session(args.ua)
         return session
+
+    # a slug the site does not have stops here — before any folder, file or ayah request
+    validate_sources(get_session, args.base, out_dir, sources, args.allow_unknown)
+    if prefilter:   # the cached sources.json may have just been refreshed
+        avail = Availability(load_json(out_dir / "sources.json", {}) or None)
 
     # ── 1. plan, from disk only: which (source, surah) really need the network? ──
     todo = []       # (src, surah, lo, hi, n_missing_ayahs)
