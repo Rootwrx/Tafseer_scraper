@@ -1815,6 +1815,9 @@ def main():
                         "individual per-source outputs; --json/--txt are then ignored)")
     p.add_argument("--sources_file", default=None,
                    help="extra JSON of Arabic source titles (default: sources_ar.json next to the script)")
+    p.add_argument("--download_only", action="store_true",
+                   help="only download the raw data (raw/*.jsonl + .done + sources.json); build NO "
+                        "md/docx/json/txt, fetch no quran.json, create no output sub-folders")
     p.add_argument("--list_sources", action="store_true", help="list known source slugs and exit")
     p.add_argument("--status", action="store_true", help="show progress and exit")
     args = p.parse_args()
@@ -1827,6 +1830,10 @@ def main():
         args.md = True if args.md is None else args.md
         args.docx = True if args.docx is None else args.docx
 
+    if args.download_only:
+        args.md = args.docx = args.json = args.txt = False
+        args.with_quran = False
+        args.combine_only = False
     # ── flag coherence ────────────────────────────────────────────────────
     if args.combine_only and not args.combine:
         p.error("--combine_only needs --combine SLUGS")
@@ -1841,7 +1848,7 @@ def main():
     if args.docx and _docxlib is None:
         log("[!] python-docx not installed — DOCX output disabled (pip install python-docx)")
         args.docx = False
-    if not (args.md or args.docx or args.json or args.txt):
+    if not args.download_only and not (args.md or args.docx or args.json or args.txt):
         log("[!] no output format enabled: the script will only download "
             "(add --md, --docx, --json or --txt to build files)")
     if args.combine and not (args.md or args.docx):
@@ -1964,12 +1971,15 @@ def main():
     if not partial:
         report_incomplete(out_dir, sources, surahs)
 
-    log("[*] Building outputs ...")
-    if not (combine_order and args.combine_only):
-        for src in sources:
-            build_outputs(out_dir, src, surahs, args, quran)
-    if combine_order:
-        build_combined(out_dir, combine_order, surahs, args, quran)
+    if args.download_only:
+        log("[*] --download_only: raw data saved, nothing built")
+    else:
+        log("[*] Building outputs ...")
+        if not (combine_order and args.combine_only):
+            for src in sources:
+                build_outputs(out_dir, src, surahs, args, quran)
+        if combine_order:
+            build_combined(out_dir, combine_order, surahs, args, quran)
 
     n_req = net_requests()
     log(f"[✓] finished: downloaded={ok} already-on-disk={skipped} failed={failed} | "
