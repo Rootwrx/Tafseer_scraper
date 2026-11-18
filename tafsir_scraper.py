@@ -31,8 +31,9 @@ Output tree
 ───────────
     <out_dir>/<عنوان المصدر>/raw/surah_053.jsonl     raw records (source of truth)
     <out_dir>/<عنوان المصدر>/raw/surah_053.done      completion marker
-    <out_dir>/<عنوان المصدر>/md/سورة النجم.md        per-surah Markdown   (no format flag → md + docx;
-    <out_dir>/<عنوان المصدر>/docx/سورة النجم.docx    per-surah Word        any of --md/--docx/--json/--txt → ONLY those)
+    (output files are built ONLY when asked for — no format flag = download only)
+    <out_dir>/<عنوان المصدر>/md/سورة النجم.md        with --md    per-surah Markdown
+    <out_dir>/<عنوان المصدر>/docx/سورة النجم.docx    with --docx  per-surah Word
     <out_dir>/<عنوان المصدر>/json/سورة النجم.json    with --json
     <out_dir>/<عنوان المصدر>/txt/سورة النجم.txt      with --txt
     --merge → ONE file per format directly inside <out_dir>/<عنوان المصدر>/ :
@@ -59,21 +60,24 @@ Usage
     # every source of the tafsir tab for surah 53
     python tafsir_scraper.py --group tafsir --surah 53
 
-    # Word output (RTL, real Heading styles → Navigation Pane)  — on by default
-    python tafsir_scraper.py --src saadi --surah 53
-    python tafsir_scraper.py --src saadi --surah 1-3 --font "Kitab" --docx_size 18
+    # NOTE: with no --md/--docx/--json/--txt the script ONLY downloads (raw/ data).
+    #       Files are built only for the formats you name.
+
+    # Word output (RTL, real Heading styles → Navigation Pane)
+    python tafsir_scraper.py --src saadi --surah 53 --docx
+    python tafsir_scraper.py --src saadi --surah 1-3 --docx --font "Kitab" --docx_size 18
 
     # ONE merged file (docx + md) instead of one file per surah
-    python tafsir_scraper.py --src ibn-katheer --surah all --merge
-    python tafsir_scraper.py --src ibn-katheer --surah 1-9 --merge --no-md
+    python tafsir_scraper.py --src ibn-katheer --surah all --md --docx --merge
+    python tafsir_scraper.py --src ibn-katheer --surah 1-9 --docx --merge
     #   already downloaded?  run the SAME command again: it rebuilds from the saved raw/
     #   data and only requests what is missing (nothing missing → zero network requests)
 
     # combine several tafsirs into ONE md/docx (order = order given)
     #   per ayah: ﴿verse﴾ → saadi → ibn-alqayyim → …
-    python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53
-    python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --combine_only
-    python tafsir_scraper.py --combine saadi,muyassar --surah all --merge --combine_only
+    python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53 --docx
+    python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --md --docx --combine_only
+    python tafsir_scraper.py --combine saadi,muyassar --surah all --docx --merge --combine_only
     #   → <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/md|docx/سورة النجم.md|.docx
 
     # extras
@@ -1775,15 +1779,13 @@ def main():
     p.add_argument("--base", default=BASE, help=argparse.SUPPRESS)
     p.add_argument("--user-agent", "--ua", dest="ua", default=None)
 
-    p.add_argument("--md", action=argparse.BooleanOptionalAction, default=None,
-                   help="Markdown output. With no format flag at all, md + docx are built; as soon "
-                        "as you pass any of --md/--docx/--json/--txt, ONLY the formats you named "
-                        "are built. --no-md removes it from the default pair (also for --combine)")
+    p.add_argument("--md", action="store_true",
+                   help="build Markdown files. Output is explicit: with none of "
+                        "--md/--docx/--json/--txt the script only downloads the raw data")
     p.add_argument("--json", action="store_true", help="JSON output (entries with cleaned text and footnotes)")
     p.add_argument("--txt", action="store_true", help="plain-text output")
-    p.add_argument("--docx", action=argparse.BooleanOptionalAction, default=None,
-                   help="Word output (needs python-docx). Same rule as --md: built by default "
-                        "only when no format flag is given; --no-docx removes it from the default pair")
+    p.add_argument("--docx", action="store_true",
+                   help="build Word files (needs python-docx); same explicit rule as --md")
     p.add_argument("--merge", action="store_true",
                    help="put all requested surahs in ONE file per format (default: one file per "
                         "surah for every format; also applies to --combine)")
@@ -1808,8 +1810,9 @@ def main():
                    help="hex colour for ﴿…﴾ quotations inside the tafsir text (DOCX and styled Markdown). "
                         "Default 0F6B9C; use 'none' to disable")
     p.add_argument("--with_quran", action=argparse.BooleanOptionalAction, default=True,
-                   help="print the ﴿ayah﴾ heading above each entry (default on; "
-                        "--no-with_quran to disable)")
+                   help="print the ﴿ayah﴾ heading above each entry in md/docx (default on; "
+                        "--no-with_quran to disable). quran.json is only fetched when --md or "
+                        "--docx is requested")
     p.add_argument("--md_style", choices=["styled", "plain"], default="styled",
                    help="styled (default): Markdown files carry the same colours, fonts, centred "
                         "poetry, footnote rule and page background as the Word files, using inline "
@@ -1833,25 +1836,11 @@ def main():
                         "individual per-source outputs; --json/--txt are then ignored)")
     p.add_argument("--sources_file", default=None,
                    help="extra JSON of Arabic source titles (default: sources_ar.json next to the script)")
-    p.add_argument("--download_only", action="store_true",
-                   help="only download the raw data (raw/*.jsonl + .done + sources.json); build NO "
-                        "md/docx/json/txt, fetch no quran.json, create no output sub-folders")
     p.add_argument("--list_sources", action="store_true", help="list known source slugs and exit")
     p.add_argument("--status", action="store_true", help="show progress and exit")
     args = p.parse_args()
     args.font = args.font.split(",")[0].strip() or "Kitab"   # Word takes ONE font name, not a CSS stack
 
-    # ── output formats: no flag → md + docx; any positive format flag → ONLY those ──
-    if args.md or args.docx or args.json or args.txt:
-        args.md, args.docx = bool(args.md), bool(args.docx)
-    else:
-        args.md = True if args.md is None else args.md
-        args.docx = True if args.docx is None else args.docx
-
-    if args.download_only:
-        args.md = args.docx = args.json = args.txt = False
-        args.with_quran = False
-        args.combine_only = False
     # ── flag coherence ────────────────────────────────────────────────────
     if args.combine_only and not args.combine:
         p.error("--combine_only needs --combine SLUGS")
@@ -1866,10 +1855,10 @@ def main():
     if args.docx and _docxlib is None:
         log("[!] python-docx not installed — DOCX output disabled (pip install python-docx)")
         args.docx = False
-    if not args.download_only and not (args.md or args.docx or args.json or args.txt):
-        log("[!] no output format enabled: the script will only download "
-            "(add --md, --docx, --json or --txt to build files)")
-    if args.combine and not (args.md or args.docx):
+    build_any = bool(args.md or args.docx or args.json or args.txt)
+    if not build_any:
+        log("[*] no output format requested (--md / --docx / --json / --txt): download only")
+    elif args.combine and not (args.md or args.docx):
         log("[!] --combine files are md/docx only: add --md and/or --docx to build them")
 
     global VERSE_COLOR, VERSE_HEURISTIC, LIGATURES, PAGE_BG, LINE_SPACING, TAFSIR_FONT
@@ -1983,7 +1972,7 @@ def main():
             todo = kept
 
     quran = None
-    if args.with_quran:
+    if args.with_quran and (args.md or args.docx):
         quran = load_json(out_dir / "quran.json")
         if not quran:   # the only request a fully-downloaded run can still make (once, then cached)
             try:
@@ -1998,8 +1987,8 @@ def main():
     if not partial:
         report_incomplete(out_dir, sources, surahs, avail, prefilter)
 
-    if args.download_only:
-        log("[*] --download_only: raw data saved, nothing built")
+    if not build_any:
+        log("[*] raw data saved — nothing built (pass --md / --docx / --json / --txt to build files)")
     else:
         log("[*] Building outputs ...")
         if not (combine_order and args.combine_only):
