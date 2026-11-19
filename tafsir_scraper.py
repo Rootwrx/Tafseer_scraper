@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 tafsir_scraper.py — Scrape tafsir / ulum sources from tafsir.app (الباحث القرآني)
-and export them to JSONL + JSON + Markdown (+ plain TXT).
+and build Word (.docx) files from them (raw data is kept as JSONL).
 
 How the site works (from the captured traffic)
 ──────────────────────────────────────────────
@@ -32,16 +32,13 @@ Output tree   (same layout as transform.py:  <group>/<category>/<source>)
     <out_dir>/تفسير/أمّهات/تفسير ابن كثير/raw/surah_053.jsonl   raw records (source of truth)
     <out_dir>/تفسير/أمّهات/تفسير ابن كثير/raw/surah_053.done    completion marker
     <out_dir>/علوم/غريب ومعاني/معاني الزجاج/...                 (the "uloom" tab)
-    (output files are built ONLY when asked for — no format flag = download only)
-    <SRC>/md/سورة النجم.md        with --md    per-surah Markdown
+    (Word files are built ONLY when asked for — no --docx = download only)
     <SRC>/docx/سورة النجم.docx    with --docx  per-surah Word
-    <SRC>/json/سورة النجم.json    with --json
-    <SRC>/txt/سورة النجم.txt      with --txt
       where <SRC> = <out_dir>/<group>/<category>/<عنوان المصدر>
     Sources outside tafsir/uloom (e.g. iraab-graphs) stay at <out_dir>/<عنوان المصدر>/.
     --layout flat  → the old  <out_dir>/<عنوان المصدر>/  layout (no group/category folders).
-    --merge → ONE file per format directly inside <SRC>/ :
-        سورة الفاتحة إلى سورة الناس.docx | القرآن كاملا.docx | سورة النجم إلى سورة الرحمن.md
+    --merge → ONE file directly inside <SRC>/ :
+        سورة الفاتحة إلى سورة الناس.docx | القرآن كاملا.docx | سورة النجم إلى سورة الرحمن.docx
         سور 1-3،53،112-114.docx          (non-contiguous selections are named by number)
     <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/docx/سورة النجم.docx   with --combine
     (old flat <slug>/ or <title>/ folders are moved into <group>/<category>/<title> automatically)
@@ -64,30 +61,28 @@ Usage
     # every source of the tafsir tab for surah 53
     python tafsir_scraper.py --group tafsir --surah 53
 
-    # NOTE: with no --md/--docx/--json/--txt the script ONLY downloads (raw/ data).
-    #       Files are built only for the formats you name.
+    # NOTE: without --docx the script ONLY downloads (raw/ data).
 
     # Word output (RTL, real Heading styles → Navigation Pane)
     python tafsir_scraper.py --src saadi --surah 53 --docx
     python tafsir_scraper.py --src saadi --surah 1-3 --docx --font "Kitab" --docx_size 18
 
-    # ONE merged file (docx + md) instead of one file per surah
-    python tafsir_scraper.py --src ibn-katheer --surah all --md --docx --merge
+    # ONE merged file instead of one file per surah
+    python tafsir_scraper.py --src ibn-katheer --surah all --docx --merge
     python tafsir_scraper.py --src ibn-katheer --surah 1-9 --docx --merge
     #   (merged --docx files also get the book intro from get_info.php, cached in <out_dir>/info/;
     #    --no_info turns that off; per-surah files never get it)
     #   already downloaded?  run the SAME command again: it rebuilds from the saved raw/
     #   data and only requests what is missing (nothing missing → zero network requests)
 
-    # combine several tafsirs into ONE md/docx (order = order given)
+    # combine several tafsirs into ONE docx (order = order given)
     #   per ayah: ﴿verse﴾ → saadi → ibn-alqayyim → …
     python tafsir_scraper.py --combine saadi,ibn-alqayyim,muyassar --surah 53 --docx
-    python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --md --docx --combine_only
+    python tafsir_scraper.py --combine saadi,muyassar --surah 1-3 --docx --combine_only
     python tafsir_scraper.py --combine saadi,muyassar --surah all --docx --merge --combine_only
-    #   → <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/md|docx/سورة النجم.md|.docx
+    #   → <out_dir>/جمع_التفاسير/<مصدر١>_<مصدر٢>/docx/سورة النجم.docx
 
     # extras
-    python tafsir_scraper.py --src saadi --surah 53 --json --txt
     python tafsir_scraper.py --list_sources
     #   an unknown source name is rejected up front ("did you mean …"); --allow_unknown overrides
     python tafsir_scraper.py --src saadi --surah 53 --force      # re-download even if saved
@@ -254,14 +249,13 @@ def src_title(src: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# OUTPUT FOLDERS  (source / combination folders in Arabic; raw, md, docx, txt, json stay English)
+# OUTPUT FOLDERS  (source / combination folders in Arabic; raw and docx stay English)
 # ═══════════════════════════════════════════════════════════════════════════
 
 COMBINED_DIR = "جمع_التفاسير"
-# technical sub-folders stay in English (raw / md / docx / txt / json); the Arabic names
+# technical sub-folders stay in English (raw / docx); the Arabic names
 # below are only recognised so folders created by an earlier version are renamed back.
-_AR_SUBDIR = {"raw": "البيانات_الخام", "md": "ماركداون", "docx": "وورد",
-              "txt": "نصوص", "json": "جيسون"}
+_AR_SUBDIR = {"raw": "البيانات_الخام", "docx": "وورد"}
 _fs_lock = threading.Lock()
 
 
@@ -442,7 +436,7 @@ def parse_categories_html(path: Path) -> dict:
 
 
 def sub_dir(parent: Path, key: str) -> Path:
-    """parent/<raw | md | docx | txt | json>  (renames an Arabic-named one from an older version)."""
+    """parent/<raw | docx>  (renames an Arabic-named one from an older version)."""
     d = _adopt(parent / _AR_SUBDIR[key], parent / key) if key in _AR_SUBDIR else parent / key
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -819,179 +813,6 @@ def split_verses(text: str) -> list[tuple[str, bool]]:
     return merged
 
 
-def md_color_verses(text: str) -> str:
-    """Plain Markdown (--md_style plain) has no colour, so verses are **bold**."""
-    out = []
-    for seg, v in split_verses(text):
-        if not v:
-            out.append(seg)
-        else:  # keep the ** markers hugging the text so Markdown accepts them
-            lead = seg[:len(seg) - len(seg.lstrip())]
-            trail = seg[len(seg.rstrip()):]
-            out.append(f"{lead}**{seg.strip()}**{trail}")
-    return "".join(out)
-
-
-def md_poem(line: str) -> str:
-    """Poetry line: the ؎ sign is dropped and the two hemistichs are separated by a gap
-    (plain Markdown cannot centre or colour text; DOCX does)."""
-    return poem_text(line)
-
-
-def md_body(text: str) -> str:
-    """One Markdown paragraph per source line (a single newline would be merged into
-    one run-on paragraph by every Markdown renderer)."""
-    return "\n\n".join(md_poem(l) if is_poem_line(l) else md_color_verses(l.strip())
-                        for l in text.split("\n") if l.strip())
-
-
-def md_note(text: str) -> str:
-    return md_color_verses(" ".join(text.split()))
-
-
-# ─── styled Markdown: inline HTML with the same colours / fonts / layout as the DOCX ───
-# (set from --md_style; "plain" = pure Markdown without any HTML)
-MD_STYLED = True
-MD_FONT = "Kitab"          # --font
-MD_SIZE = 16.0             # --docx_size (used as px)
-MD_TITLE_SIZE = 20.0       # --tafsir_title_size
-MD_TAFSIR_BOLD = False     # --tafsir_bold
-
-
-def _hx(text: str) -> str:
-    return _html.escape(text, quote=False)
-
-
-def _fam(name: str) -> str:
-    return "'" + name.replace("'", "") + "', serif"
-
-
-def _st(color=None, font=None, size=None, bold=None, align=None, margin=None) -> str:
-    p = []
-    if color:
-        p.append(f"color:#{color}")
-    if font:
-        p.append(f"font-family:{_fam(font)}")
-    if size:
-        p.append(f"font-size:{size:g}px")
-    if bold is not None:
-        p.append(f"font-weight:{'bold' if bold else 'normal'}")
-    if align:
-        p.append(f"text-align:{align}")
-    if margin is not None:
-        p.append(f"margin:{margin[0]}px 0 {margin[1]}px")
-    return ";".join(p)
-
-
-def _mdp(inner: str, color, font, size, bold=False, align=None, margin=None) -> str:
-    return f'<p style="{_st(color, font, size, bold, align, margin)}">{inner}</p>'
-
-
-def _mdh(level: int, text: str, color, font, size, bold: bool = True) -> str:
-    return f'{"#" * level} <span style="{_st(color, font, size, bold)}">{_hx(text)}</span>'
-
-
-def md_runs(text: str, base_color: str, sz: float) -> str:
-    """Like _d_text_runs: Quran quotations in the verse font/colour, (١)-style numbers in
-    the note colour, the rest inherits the paragraph's colour/font."""
-    out = []
-    for seg, is_verse in split_verses(text):
-        if is_verse:
-            out.append(f'<span style="{_st(VERSE_COLOR or base_color, MD_FONT, sz - VERSE_SIZE_DELTA, False)}">'
-                       f'{_hx(seg)}</span>')
-            continue
-        for part in _NUM_MARK_RE.split(seg):
-            if not part:
-                continue
-            if _NUM_MARK_RE.fullmatch(part):
-                out.append(f'<span style="color:#{_note_color()}">{_hx(part)}</span>')
-            else:
-                out.append(_hx(part))
-    return "".join(out)
-
-
-def md_styled_body(body: str, tf: str, sz: float, ink: str, bold: bool = False) -> str:
-    """Same line rules as the DOCX: poetry centred+red, basmala gold, '* * *' centred+red."""
-    C = _DOCX_COLORS
-    out = []
-    for line in body.split("\n"):
-        t = line.strip()
-        if is_poem_line(line):
-            out.append(_mdp(_hx(poem_text(line)), POEM_COLOR, tf, sz, align="center", margin=(4, 4)))
-        elif t in BASMALA_LINES:
-            bsz = sz + (2 if BASMALA_MODE == "text" else 10)
-            out.append(_mdp(md_runs(t, "C99200", bsz), "C99200", tf, bsz, margin=(6, 6)))
-        elif _SEP_LINE_RE.match(t):
-            out.append(_mdp(md_runs(t, C["sep"], sz), C["sep"], tf, sz, align="center", margin=(6, 6)))
-        elif t:
-            out.append(_mdp(md_runs(t, ink, sz), ink, tf, sz, bold=bold, align="justify"))
-    return "\n\n".join(out)
-
-
-def md_styled_notes(notes: list[str], tf: str, sz: float) -> str:
-    """Coloured rule, then «(١) text» with the number in the verse colour (as in the DOCX)."""
-    if not notes:
-        return ""
-    nc = _note_color()
-    # a plain <div> (not <hr>, which viewers decorate with their own extra line): short rule,
-    # NOTE_RULE_CM wide, at the right-hand (start) side — like the DOCX
-    rows = [f'<div style="width:{NOTE_RULE_CM:g}cm;height:0;border-top:1px solid #{nc};'
-            f'margin:8px 0 6px;margin-left:auto;margin-right:0"></div>']
-    for i, n in enumerate(notes, 1):
-        rows.append(f'<p style="{_st(_DOCX_COLORS["note"], tf, sz, False, None, (2, 2))}">'
-                    f'<span style="color:#{nc}">({ar_nums(i)}) </span>'
-                    f'{md_runs(" ".join(n.split()), _DOCX_COLORS["note"], sz)}</p>')
-    return "\n".join(rows)
-
-
-def md_cover(title: str, title_font: str, title_extra: str, lines: list[str]) -> str:
-    C = _DOCX_COLORS
-    out = [_mdp(_hx(BASMALA), "C99200", MD_FONT, MD_SIZE + 2, align="center", margin=(0, 14)),
-           f'<h1 style="{_st(C["title"], title_font, MD_SIZE + 14, True, "center")}">{_hx(title)}</h1>']
-    if title_extra:
-        out.append(_mdp(_hx(title_extra), C["surah"], MD_FONT, MD_SIZE + 2, align="center"))
-    return "\n\n".join(out + lines)
-
-
-def md_wrap(inner: str) -> str:
-    """Whole file in one RTL block with the DOCX page colour, so the dark-ink text stays
-    readable even in a dark viewer theme."""
-    style = (f"background:#{PAGE_BG or 'FFFFFF'};color:#{_DOCX_COLORS['ink']};"
-             f"{_st(font=TAFSIR_FONT, size=MD_SIZE)};line-height:{LINE_SPACING * 2:.2f};"
-             f"padding:1.2em 1.6em;border-radius:8px")
-    return f'<div dir="rtl" style="{style}">\n\n{inner}\n\n</div>\n'
-
-
-def md_single(src: str, body: str, title_extra: str, plain_prefix: str = "") -> str:
-    """Final text of a single-source .md file (cover + page wrapper when styled)."""
-    if not MD_STYLED:
-        return plain_prefix + body
-    date = _mdp(_hx(f"المصدر: {BASE}/{src} | تاريخ التحميل: {time.strftime('%Y-%m-%d')}"),
-                "888888", MD_FONT, 10, align="center", margin=(0, 12))
-    return md_wrap(md_cover(src_title(src), TAFSIR_FONT, title_extra, [date]) + "\n\n" + body)
-
-
-def md_styled_surah(src: str, surah: int, records: list[dict], quran) -> str:
-    C = _DOCX_COLORS
-    sz = MD_SIZE
-    out = [_mdh(2, f"سورة {SUWAR[surah - 1][1]}", C["surah"], MD_FONT, sz + 6), ""]
-    for r in sorted(records, key=lambda r: r["a_start"]):
-        rng = (ar_nums(r["a_start"]) if r["a_start"] == r["a_end"]
-               else f"{ar_nums(r['a_start'])}-{ar_nums(r['a_end'])}")
-        out += [_mdh(3, f"الآية {rng}", C["ayah"], MD_FONT, sz + 2, bold=False), ""]
-        head = quran_heading(quran, surah, r["a_start"], r["a_end"])
-        if head:
-            out += [_mdp(_hx(head), C["quran"], MD_FONT, sz, margin=(0, 6)), ""]
-        body, notes = clean_text(r["data"])
-        if not body:
-            out += [_mdp("لا مواد لهذه الآية في هذا الكتاب", "888888", MD_FONT, sz - 2), ""]
-            continue
-        out += [md_styled_body(body, TAFSIR_FONT, sz, C["ink"]), ""]
-        if notes:
-            out += [md_styled_notes(notes, TAFSIR_FONT, max(10, sz - 4)), ""]
-    return "\n".join(out)
-
-
 def debug_marks(out_dir: Path, sources: list[str], surahs: list[int]) -> None:
     """Print unusual symbol characters found in saved data (to see what the site uses as quote marks)."""
     import unicodedata
@@ -1195,53 +1016,10 @@ def surahs_stem(surahs: list[int]) -> str:
     return safe_name("سور " + "،".join(runs), limit=100)
 
 
-def build_md_for_surah(src: str, surah: int, records: list[dict], quran) -> str:
-    if MD_STYLED:
-        return md_styled_surah(src, surah, records, quran)
-    title = src_title(src)
-    out = [f"## سورة {SUWAR[surah - 1][1]} — {title}", ""]
-    for r in sorted(records, key=lambda r: r["a_start"]):
-        head = quran_heading(quran, surah, r["a_start"], r["a_end"])
-        rng = (ar_nums(r["a_start"]) if r["a_start"] == r["a_end"]
-               else f"{ar_nums(r['a_start'])}-{ar_nums(r['a_end'])}")
-        out.append(f"### الآية {rng}")
-        out.append("")
-        if head:
-            out.append(f"**{head}**")
-            out.append("")
-        body, notes = clean_text(r["data"])
-        out.append(md_body(body) if body else "_لا مواد لهذه الآية في هذا الكتاب_")
-        out.append("")
-        if notes:
-            out.append("---")
-            for i, n in enumerate(notes, 1):
-                # two trailing spaces = hard line break: one footnote per line, no paragraph gap
-                out.append(f"> ({ar_nums(i)}) {md_note(n)}" + ("  " if i < len(notes) else ""))
-            out.append("")
-    return "\n".join(out)
-
-
-def _txt_for_surah(s: int, recs: list[dict]) -> str:
-    lines = []
-    for r in recs:
-        body, notes = clean_text(r["data"])
-        lines.append(f"[{SUWAR[s - 1][1]} {r['a_start']}-{r['a_end']}]\n{body}\n")
-        lines.extend(f"({i}) {n}" for i, n in enumerate(notes, 1))
-    return "\n".join(lines)
-
-
-def _json_entries(recs: list[dict]) -> list[dict]:
-    out = []
-    for r in recs:
-        body, notes = clean_text(r["data"])
-        out.append({**r, "text": body, "footnotes": notes})
-    return out
-
-
 def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> None:
-    """Every requested format follows the same rule:
-         (default)   one file per surah   -> <src>/<format>/<surah>.<ext>
-         --merge     one file for all     -> <src>/<name>.<ext>"""
+    """DOCX output:
+         (default)   one file per surah   -> <src>/docx/<surah>.docx
+         --merge     one file for all     -> <src>/<name>.docx"""
     base = src_dir(out_dir, src)
     title = src_title(src)
     sections = []
@@ -1264,31 +1042,6 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
         base.mkdir(parents=True, exist_ok=True)
         return base / f"{stem}.{ext}"
 
-    if args.md:
-        if not args.merge:
-            for s, recs in sections:
-                text = md_single(src, build_md_for_surah(src, s, recs, quran), f"سورة {SUWAR[s - 1][1]}")
-                target("md", "md", s).write_text(text, encoding="utf-8")
-        else:
-            fm = f"# {title}\n\n> المصدر: {BASE}/{src}\n\n"
-            body = "\n\n".join(build_md_for_surah(src, s, recs, quran) for s, recs in sections)
-            text = md_single(src, body, "" if len(sections) == 1 else stem, plain_prefix=fm)
-            target("md", "md").write_text(text, encoding="utf-8")
-    if args.txt:
-        if not args.merge:
-            for s, recs in sections:
-                target("txt", "txt", s).write_text(_txt_for_surah(s, recs), encoding="utf-8")
-        else:
-            target("txt", "txt").write_text("\n\n".join(_txt_for_surah(s, r) for s, r in sections),
-                                          encoding="utf-8")
-    if args.json:
-        meta = {"source": src, "title": title, "origin": f"{BASE}/{src}"}
-        if not args.merge:
-            for s, recs in sections:
-                atomic_write_json(target("json", "json", s), {**meta, "entries": _json_entries(recs)})
-        else:
-            atomic_write_json(target("json", "json"), {
-                **meta, "entries": [e for _, recs in sections for e in _json_entries(recs)]})
     if args.docx:
         if not args.merge:
             for s, recs in sections:
@@ -1762,67 +1515,6 @@ def _see_before(idx: int, src: str, rec: dict) -> str:
             f"{_rng(rec['a_start'], rec['a_end'])}")
 
 
-def md_styled_combined(order: list[str], surah: int, entries: list[dict], quran) -> str:
-    C = _DOCX_COLORS
-    sz = MD_SIZE
-    out = [_mdh(2, f"سورة {SUWAR[surah - 1][1]}", C["surah"], MD_FONT, sz + 6), ""]
-    for e in entries:
-        out += [_mdh(3, f"الآية {_rng(e['a_start'], e['a_end'])}", C["ayah"], MD_FONT, sz + 2, bold=False), ""]
-        head = quran_heading(quran, surah, e["a_start"], e["a_end"])
-        if head:
-            out += [_mdp(_hx(head), C["quran"], MD_FONT, sz, margin=(0, 6)), ""]
-        for idx, src, rec in e["items"]:
-            body, notes = clean_text(rec["data"])
-            label = _src_label(idx, src)
-            if (rec["a_start"], rec["a_end"]) != (e["a_start"], e["a_end"]):
-                label += f" — الآيات {_rng(rec['a_start'], rec['a_end'])}"
-            out += [_mdh(4, label, SRC_FG[(idx - 1) % len(SRC_FG)], TAFSIR_FONT, MD_TITLE_SIZE, bold=False), ""]
-            out += [md_styled_body(body, TAFSIR_FONT, sz, C["ink"], bold=MD_TAFSIR_BOLD), ""]
-            if notes:
-                out += [md_styled_notes(notes, TAFSIR_FONT, max(10, sz - 4)), ""]
-        for idx, src, rec in e["notes"]:
-            out += [_mdp(_hx(_see_before(idx, src, rec)), "888888", MD_FONT, max(10, sz - 4),
-                         margin=(0, 10)), ""]
-    return "\n".join(out)
-
-
-def md_combined_file(order: list[str], body: str, title_extra: str, plain_head: str) -> str:
-    """Final text of a combined .md file (cover + page wrapper when styled)."""
-    if not MD_STYLED:
-        return plain_head + body
-    names = [_mdp(_hx(_src_label(i, src)), SRC_FG[(i - 1) % len(SRC_FG)], TAFSIR_FONT, MD_TITLE_SIZE,
-                  align="center", margin=(0, 0)) for i, src in enumerate(order, 1)]
-    date = _mdp(_hx(f"تاريخ التحميل: {time.strftime('%Y-%m-%d')}"), "888888", MD_FONT, 10,
-                align="center", margin=(8, 12))
-    return md_wrap(md_cover("جمع التفاسير", MD_FONT, title_extra, names + [date]) + "\n\n" + body)
-
-
-def build_combined_md(order: list[str], surah: int, entries: list[dict], quran) -> str:
-    if MD_STYLED:
-        return md_styled_combined(order, surah, entries, quran)
-    out = [f"## سورة {SUWAR[surah - 1][1]}", ""]
-    for e in entries:
-        out += [f"### الآية {_rng(e['a_start'], e['a_end'])}", ""]
-        head = quran_heading(quran, surah, e["a_start"], e["a_end"])
-        if head:
-            out += [f"**{head}**", ""]
-        for idx, src, rec in e["items"]:
-            body, notes = clean_text(rec["data"])
-            label = _src_label(idx, src)
-            if (rec["a_start"], rec["a_end"]) != (e["a_start"], e["a_end"]):
-                label += f" — الآيات {_rng(rec['a_start'], rec['a_end'])}"
-            out += [f"#### {label}", ""]
-            out += [md_body(body), ""]
-            for i, n in enumerate(notes, 1):
-                # two trailing spaces = hard line break: one footnote per line, no paragraph gap
-                out.append(f"> ({ar_nums(i)}) {md_note(n)}" + ("  " if i < len(notes) else ""))
-            if notes:
-                out.append("")
-        for idx, src, rec in e["notes"]:
-            out += [f"_{_see_before(idx, src, rec)}_", ""]
-    return "\n".join(out)
-
-
 _NUM_MARK_RE = re.compile(r"(\(\s*[\d٠-٩]+\s*\))")   # (١)  (٢)  (12) ... footnote marks & numbering
 
 
@@ -2053,21 +1745,6 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
     stem = surahs_stem([s for s, _ in sections])
 
     # same rule as build_outputs: one file per surah by default, --merge = one file for all
-    if args.md:
-        names = "، ".join(_src_label(i, src) for i, src in enumerate(order, 1))
-        head = f"# جمع التفاسير\n\n> {names}\n\n"
-        if not args.merge:
-            md_dir = sub_dir(root, "md")
-            for s, entries in sections:
-                md = build_combined_md(order, s, entries, quran)
-                text = md_combined_file(order, md, f"سورة {SUWAR[s - 1][1]}", head)
-                (md_dir / f"{surah_file(s)}.md").write_text(text, encoding="utf-8")
-            log(f"  [md] saved → {md_dir}  ({len(sections)} surah file(s))")
-        else:
-            mds = [build_combined_md(order, s, entries, quran) for s, entries in sections]
-            text = md_combined_file(order, "\n\n".join(mds), "" if len(sections) == 1 else stem, head)
-            (root / f"{stem}.md").write_text(text, encoding="utf-8")
-            log(f"  [md] saved → {root / (stem + '.md')}")
     if args.docx:
         if not args.merge:
             d = sub_dir(root, "docx")
@@ -2157,7 +1834,7 @@ def download_all(session, args, out_dir: Path, todo: list, avail: Availability,
 
 
 def main():
-    p = argparse.ArgumentParser(description="Scrape tafsir.app sources to JSONL / JSON / Markdown")
+    p = argparse.ArgumentParser(description="Scrape tafsir.app sources to JSONL and build Word (.docx) files")
     p.add_argument("--src", default=None, help="comma-separated source slugs, e.g. saadi,muyassar")
     p.add_argument("--group", choices=list(GROUPS), default=None,
                    help="add every source of a tab: tafsir | uloom")
@@ -2183,13 +1860,9 @@ def main():
     p.add_argument("--base", default=BASE, help=argparse.SUPPRESS)
     p.add_argument("--user-agent", "--ua", dest="ua", default=None)
 
-    p.add_argument("--md", action="store_true",
-                   help="build Markdown files. Output is explicit: with none of "
-                        "--md/--docx/--json/--txt the script only downloads the raw data")
-    p.add_argument("--json", action="store_true", help="JSON output (entries with cleaned text and footnotes)")
-    p.add_argument("--txt", action="store_true", help="plain-text output")
     p.add_argument("--docx", action="store_true",
-                   help="build Word files (needs python-docx); same explicit rule as --md")
+                   help="build Word files (needs python-docx). Output is explicit: without "
+                        "--docx the script only downloads the raw data")
     p.add_argument("--merge", action="store_true",
                    help="put all requested surahs in ONE file per format (default: one file per "
                         "surah for every format; also applies to --combine)")
@@ -2213,17 +1886,12 @@ def main():
                    help="hex colour for the WHOLE DOCX page background (default F3EEE2, soft "
                         "paper); use 'none' for a white page")
     p.add_argument("--verse_color", default="0F6B9C",
-                   help="hex colour for ﴿…﴾ quotations inside the tafsir text (DOCX and styled Markdown). "
+                   help="hex colour for ﴿…﴾ quotations inside the tafsir text (DOCX). "
                         "Default 0F6B9C; use 'none' to disable")
     p.add_argument("--with_quran", action=argparse.BooleanOptionalAction, default=True,
-                   help="print the ﴿ayah﴾ heading above each entry in md/docx (default on; "
-                        "--no-with_quran to disable). quran.json is only fetched when --md or "
+                   help="print the ﴿ayah﴾ heading above each entry in the docx (default on; "
+                        "--no-with_quran to disable). quran.json is only fetched when "
                         "--docx is requested")
-    p.add_argument("--md_style", choices=["styled", "plain"], default="styled",
-                   help="styled (default): Markdown files carry the same colours, fonts, centred "
-                        "poetry, footnote rule and page background as the Word files, using inline "
-                        "HTML (renders in VS Code, Typora, browsers; GitHub strips the styles). "
-                        "plain: pure Markdown, verses in **bold**, no HTML")
     p.add_argument("--ligatures", choices=["auto", "expand", "keep"], default="auto",
                    help="honorific ligatures like ﵇ (U+FD47) that many fonts can't draw: "
                         "auto = spell them out but keep ﷺ (default), expand = spell out all "
@@ -2239,7 +1907,7 @@ def main():
                         "missing, so it works while downloading or after.")
     p.add_argument("--combine_only", action="store_true",
                    help="requires --combine: build ONLY the combined files (skip the "
-                        "individual per-source outputs; --json/--txt are then ignored)")
+                        "individual per-source outputs)")
     p.add_argument("--sources_file", default=None,
                    help="extra JSON of Arabic source titles (default: sources_ar.json next to the script)")
     p.add_argument("--list_sources", action="store_true", help="list known source slugs and exit")
@@ -2254,28 +1922,18 @@ def main():
         log("[!] --tafsir_title_size / --tafsir_bold only affect --combine DOCX files — ignored")
     args.tafsir_title_size = 20 if args.tafsir_title_size is None else args.tafsir_title_size
     args.tafsir_bold = bool(args.tafsir_bold)
-    if args.combine and (args.json or args.txt):
-        log("[!] --json/--txt are only built for the individual per-source files, "
-            "not for --combine (combined output is md/docx only)"
-            + (" — with --combine_only they are ignored" if args.combine_only else ""))
     if args.docx and _docxlib is None:
         log("[!] python-docx not installed — DOCX output disabled (pip install python-docx)")
         args.docx = False
-    build_any = bool(args.md or args.docx or args.json or args.txt)
+    build_any = bool(args.docx)
     if not build_any:
-        log("[*] no output format requested (--md / --docx / --json / --txt): download only")
-    elif args.combine and not (args.md or args.docx):
-        log("[!] --combine files are md/docx only: add --md and/or --docx to build them")
+        log("[*] --docx not given: download only")
 
     global VERSE_COLOR, VERSE_HEURISTIC, LIGATURES, PAGE_BG, LINE_SPACING, TAFSIR_FONT
     LINE_SPACING = args.line_spacing
     TAFSIR_FONT = args.tafsir_font.split(",")[0].strip() or "KFGQPC Uthman Taha Naskh"
     PAGE_BG = None if args.page_bg.lower() in ("none", "off", "white", "") else args.page_bg.lstrip("#").upper()
     LIGATURES = args.ligatures
-    global MD_STYLED, MD_FONT, MD_SIZE, MD_TITLE_SIZE, MD_TAFSIR_BOLD
-    MD_STYLED = args.md_style == "styled"
-    MD_FONT, MD_SIZE = args.font, float(args.docx_size)
-    MD_TITLE_SIZE, MD_TAFSIR_BOLD = float(args.tafsir_title_size), bool(args.tafsir_bold)
     VERSE_HEURISTIC = args.verse_heuristic
     VERSE_COLOR = None if args.verse_color.lower() in ("none", "off", "") else args.verse_color.lstrip("#").upper()
 
@@ -2392,7 +2050,7 @@ def main():
             todo = kept
 
     quran = None
-    if args.with_quran and (args.md or args.docx):
+    if args.with_quran and args.docx:
         quran = load_json(out_dir / "quran.json")
         if not quran:   # the only request a fully-downloaded run can still make (once, then cached)
             try:
@@ -2408,7 +2066,7 @@ def main():
         report_incomplete(out_dir, sources, surahs, avail, prefilter)
 
     if not build_any:
-        log("[*] raw data saved — nothing built (pass --md / --docx / --json / --txt to build files)")
+        log("[*] raw data saved — nothing built (pass --docx to build Word files)")
     else:
         if args.docx and args.merge and not args.no_info:   # intros only go into full (merged) files
             need = ([] if (combine_order and args.combine_only) else list(sources)) + combine_order
