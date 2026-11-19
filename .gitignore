@@ -1,3 +1,4 @@
-Sources.txt
 tafsir_output
 transform.py
+__pycache__/
+__pycache__/*

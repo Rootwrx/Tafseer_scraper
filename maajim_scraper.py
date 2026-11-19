@@ -285,8 +285,21 @@ def _roots_from_obj(obj) -> list:
 
 
 def clean_roots(lst) -> list:
-    """Strip diacritics, drop empties and duplicates, keep order."""
-    return list(dict.fromkeys(r for r in (norm_root(x) for x in lst) if r))
+    """Strip diacritics, drop empties and duplicates, keep order.
+    If two different raw spellings collapse to the same stripped form (e.g. كلا / كلّا),
+    keep each raw spelling instead, because the site treats them as different entries."""
+    groups = {}
+    for x in lst:
+        x = x.strip().replace("\u0640", "")
+        n = norm_root(x)
+        if n:
+            forms = groups.setdefault(n, [])
+            if x not in forms:
+                forms.append(x)
+    out = []
+    for n, forms in groups.items():
+        out += [n] if len(forms) == 1 else forms
+    return out
 
 
 def read_roots_file(path: str) -> list:
