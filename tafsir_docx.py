@@ -26,6 +26,7 @@ except ImportError:
 from tafsir_common import (
     BASE, SUWAR, _TAG_RE, ar_nums, combined_dir, load_records, log, quran_heading,
     raw_paths, source_info, src_dir, src_title, sub_dir, surah_file, surahs_stem,
+    merged_file_stem,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -179,7 +180,7 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
         if not args.merge and s is not None:
             return sub_dir(base, fmt) / f"{surah_file(s)}.{ext}"
         base.mkdir(parents=True, exist_ok=True)
-        return base / f"{stem}.{ext}"
+        return base / f"{merged_file_stem(title, stem)}.{ext}"
 
     if args.docx:
         if not args.merge:
@@ -769,7 +770,8 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
                                     title_size=args.tafsir_title_size,
                                     bold=args.tafsir_bold)
         else:
-            build_combined_docx(root / f"{stem}.docx", order, sections, quran,
+            build_combined_docx(root / f"{merged_file_stem('_'.join(src_title(x) for x in order), stem)}.docx",
+                                order, sections, quran,
                                 args.font, args.docx_size,
                                 title_extra="" if len(sections) == 1 else stem,
                                 title_size=args.tafsir_title_size, bold=args.tafsir_bold,

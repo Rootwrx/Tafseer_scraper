@@ -471,11 +471,17 @@ def surah_file(s: int) -> str:
 def surahs_stem(surahs: list[int]) -> str:
     """File-name stem for a merged file, built from the surahs the file REALLY contains:
          114 surahs → القرآن كاملا          one surah → سورة النجم
+         ≥100 surahs, ≤5 missing → القرآن كاملا عدا سورة الكهف
          contiguous → سورة النجم إلى سورة الرحمن
          otherwise  → سور 1-3،53،112-114   (never claims a range that has holes)"""
     surahs = sorted(set(surahs))
     if len(surahs) == 114:
         return "القرآن كاملا"
+    missing = [x for x in range(1, 115) if x not in set(surahs)]
+    if len(surahs) >= 100 and len(missing) <= 5:      # nearly complete → say what is missing
+        names = [SUWAR[x - 1][1] for x in missing]
+        tail = f"سورة {names[0]}" if len(names) == 1 else "سور " + "، ".join(names)
+        return safe_name(f"القرآن كاملا عدا {tail}", limit=100)
     if len(surahs) == 1:
         return surah_file(surahs[0])
     if surahs[-1] - surahs[0] + 1 == len(surahs):
@@ -487,6 +493,13 @@ def surahs_stem(surahs: list[int]) -> str:
             lo = x
         prev = x
     return safe_name("سور " + "،".join(runs), limit=100)
+
+
+def merged_file_stem(title: str, stem: str, limit: int = 150) -> str:
+    """File name (no extension) of a merged book: '<tafsir name> - <surah span>'.
+    Only the tafsir-name part is shortened when too long, so the surah span is never cut."""
+    head = safe_name(title, limit=max(20, limit - len(stem) - 3))
+    return f"{head} - {stem}"
 
 
 # ── source info for the cover page: author (المؤلف) + creed (العقيدة), read from sources.json ──
