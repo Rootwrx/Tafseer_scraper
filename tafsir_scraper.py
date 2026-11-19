@@ -1463,6 +1463,69 @@ def _d_setup(doc, font: str, size: float) -> None:
     _d_page_number_footer(doc, font)
 
 
+# ── source info for the cover page: author (المؤلف) + creed (العقيدة), read from sources.json ──
+INFO_FIELDS = (("المؤلف", "المؤلف"), ("العقيدة", "العقيدة"))   # (key in sources.json, label on the cover)
+
+
+def _find_field(obj, key: str, depth: int = 0):
+    """First non-empty value stored under *key*, looking in nested dicts/lists too."""
+    if depth > 4:
+        return None
+    if isinstance(obj, dict):
+        v = obj.get(key)
+        if v not in (None, "", [], {}):
+            return v
+        for sub in obj.values():
+            if isinstance(sub, (dict, list)):
+                r = _find_field(sub, key, depth + 1)
+                if r not in (None, "", [], {}):
+                    return r
+    elif isinstance(obj, list):
+        for sub in obj:
+            if isinstance(sub, (dict, list)):
+                r = _find_field(sub, key, depth + 1)
+                if r not in (None, "", [], {}):
+                    return r
+    return None
+
+
+def _flat_value(v) -> str:
+    if isinstance(v, str):
+        s = v
+    elif isinstance(v, (list, tuple)):
+        s = "، ".join(x for x in (_flat_value(i) for i in v) if x)
+    elif isinstance(v, dict):
+        for k in ("name", "title", "text", "value", "اسم"):
+            if v.get(k):
+                return _flat_value(v[k])
+        s = "، ".join(x for x in (_flat_value(i) for i in v.values()) if x)
+    else:
+        s = "" if v is None else str(v)
+    s = _html.unescape(_TAG_RE.sub(" ", s))
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def source_info(src: str) -> list[tuple[str, str]]:
+    """[('المؤلف', '...'), ('العقيدة', '...')] — only the fields the source actually has."""
+    meta = SITE_META.get(src) if isinstance(SITE_META, dict) else None
+    out = []
+    if isinstance(meta, dict):
+        for key, label in INFO_FIELDS:
+            val = _flat_value(_find_field(meta, key))
+            if val:
+                out.append((label, val))
+    return out
+
+
+def _d_info_lines(doc, src: str, font: str, size: float) -> None:
+    """Cover page: one centred 'المؤلف: …' / 'العقيدة: …' line per field the source has."""
+    C = _DOCX_COLORS
+    for label, val in source_info(src):
+        par = _d_par(doc, "", font, size, align=WD_ALIGN_PARAGRAPH.CENTER, after=2)
+        _d_run(par, f"{label}: ", font, size, color=C["note"])
+        _d_run(par, val, font, size, color=C["ink"])
+
+
 BASMALA_ORNAMENT = "\uFDFD"          # ﷽
 BASMALA_FONT = "Kitab"               # font used for the ﷽ line in docx files
 BASMALA_SKIP_SURAHS = {9}            # surahs that get no ﷽ (At-Tawba).  Add 1 here to skip Al-Fatiha, whose ayah 1 IS the basmala
@@ -1537,6 +1600,7 @@ def build_docx(out_path: Path, src: str, sections, quran, font: str, size: float
     _d_run(t, title, TAFSIR_FONT, size + 14, True, C["title"])
     if title_extra:
         _d_par(doc, title_extra, font, size + 2, color=C["surah"], align=WD_ALIGN_PARAGRAPH.CENTER)
+    _d_info_lines(doc, src, TAFSIR_FONT, size)
     _d_par(doc, f"المصدر: {BASE}/{src} | تاريخ التحميل: {time.strftime('%Y-%m-%d')}",
            font, 10, color="888888", align=WD_ALIGN_PARAGRAPH.CENTER, after=12)
 
@@ -1860,6 +1924,10 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
     for idx, src in enumerate(order, 1):
         _d_par(doc, _src_label(idx, src), TAFSIR_FONT, title_size, color=SRC_FG[(idx - 1) % len(SRC_FG)],
                align=WD_ALIGN_PARAGRAPH.CENTER, after=0)
+        info = "  |  ".join(f"{l}: {v}" for l, v in source_info(src))
+        if info:
+            _d_par(doc, info, TAFSIR_FONT, max(10, size - 4), color="888888",
+                   align=WD_ALIGN_PARAGRAPH.CENTER, after=4)
     _d_par(doc, f"تاريخ التحميل: {time.strftime('%Y-%m-%d')}", font, 10, color="888888",
            align=WD_ALIGN_PARAGRAPH.CENTER, before=8, after=12)
 
