@@ -48,6 +48,8 @@ Output tree
   --merge --docx also puts the book intro (نبذة عن الكتاب, from get_info.php) right after the cover.
       It is cached in <out_dir>/معاجم/info/<slug>.json (requested once per book); --no_info turns it off.
       Per-letter docx files never get it.
+  Every docx (merged or per-letter) shows "المؤلف: …" on the cover when <out_dir>/sources.json has a
+      "المؤلف" for that slug (nothing is added when it has none).
 """
 
 import argparse
@@ -233,6 +235,7 @@ def clean_text(raw: str):
 # ─── book intro (get_info.php) ──────────────────────────────────────────────
 
 SOURCE_INTRO: dict = {}      # slug → cleaned intro text, filled in main() for merged docx files
+SOURCE_AUTHOR: dict = {}     # slug → author ("المؤلف" in <out_dir>/sources.json), filled in main()
 _HEAD_RE = re.compile(r"<h[1-6][^>]*>([\s\S]*?)</h[1-6]>", re.I)
 _BLOCK_RE = re.compile(r"</?(?:p|div|li|ul|ol|tr|table|section|article|blockquote)\b[^>]*>", re.I)
 
@@ -249,6 +252,21 @@ def clean_intro(raw) -> str:
     out = [l for l in (" ".join(x.split()) for x in body.split("\n")) if l]
     out += [f"({ar_nums(i)}) {' '.join(html.unescape(n).split())}" for i, n in enumerate(notes, 1)]
     return "\n".join(out)
+
+
+def load_authors(out_dir: Path, sources: list) -> None:
+    """Fill SOURCE_AUTHOR from <out_dir>/sources.json  ({slug: {"المؤلف": …, …}}); read-only."""
+    path = out_dir / "sources.json"
+    meta = load_json(path)
+    if not isinstance(meta, dict):
+        log(f"[!] {path} not found / unreadable — no author line in the docx files")
+        return
+    for src in sources:
+        ent = meta.get(src)
+        a = ent.get("المؤلف") if isinstance(ent, dict) else None
+        if isinstance(a, str) and " ".join(a.split()):
+            SOURCE_AUTHOR[src] = " ".join(a.split())
+    log(f"[*] author: {len(SOURCE_AUTHOR)} of {len(sources)} dictionary(ies) have one in sources.json")
 
 
 def fetch_source_info(session, base, out_dir: Path, src, force=False) -> str:
@@ -676,7 +694,7 @@ def _d_intro(doc, text: str, font: str, tf: str, size: float) -> None:
 
 
 def build_docx(out_path: Path, title: str, src: str, sections: list, font: str, size: float,
-               title_extra: str = "", intro: str = "") -> None:
+               title_extra: str = "", intro: str = "", author: str = "") -> None:
     """sections = [(letter, [entry, …])]; intro (merged files only) goes after the cover block."""
     if _docxlib is None:
         log("  [!] python-docx not installed — DOCX skipped (pip install python-docx)")
@@ -694,6 +712,10 @@ def build_docx(out_path: Path, title: str, src: str, sections: list, font: str, 
     _d_run(t, title, TEXT_FONT, size + 14, True, C["title"])
     if title_extra:
         _d_par(doc, title_extra, font, size + 2, color=C["letter"], align=WD_ALIGN_PARAGRAPH.CENTER)
+    if author:   # cover line "المؤلف: …" (merged and per-letter files)
+        par = _d_par(doc, "", TEXT_FONT, size, align=WD_ALIGN_PARAGRAPH.CENTER, after=2)
+        _d_run(par, "المؤلف: ", TEXT_FONT, size, color=C["note"])
+        _d_run(par, author, TEXT_FONT, size, color=C["ink"])
     _d_par(doc, f"المصدر: {BASE}/{src} | تاريخ التحميل: {time.strftime('%Y-%m-%d')}", font, 10,
            color="888888", align=WD_ALIGN_PARAGRAPH.CENTER, after=12)
 
@@ -767,12 +789,13 @@ def build_outputs(args, out_dir, src, titles) -> None:
     if args.docx:
         if args.merge:
             build_docx(base / f"{title}.docx", title, src, list(by_letter.items()), args.font,
-                       args.docx_size, intro=SOURCE_INTRO.get(src, ""))
+                       args.docx_size, intro=SOURCE_INTRO.get(src, ""),
+                       author=SOURCE_AUTHOR.get(src, ""))
         else:
             (base / "docx").mkdir(exist_ok=True)
             for ch, rs in by_letter.items():
                 build_docx(base / "docx" / f"حرف {ch}.docx", title, src, [(ch, rs)], args.font,
-                           args.docx_size, title_extra=f"حرف {ch}")
+                           args.docx_size, title_extra=f"حرف {ch}", author=SOURCE_AUTHOR.get(src, ""))
     log(f"  [{title}] {len(ents)} root entries built → {base}")
 
 
@@ -876,6 +899,8 @@ def main():
             log(f"  [!] {src}: every answer was empty — wrong slug or root spelling (try --probe)")
 
     if args.md or args.txt or args.json or args.docx:
+        if args.docx:
+            load_authors(out_dir, sources)
         if args.docx and args.merge and not args.no_info:   # intros only go into merged files
             for src in sources:
                 SOURCE_INTRO[src] = fetch_source_info(session, args.base, out_dir, src, args.force)
