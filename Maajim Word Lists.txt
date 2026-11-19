@@ -1,0 +1,18 @@
+APP_DATA.arabic_words["lisan"]
+
+
+in Console Run this :
+
+const slugs = ["umdah-alhufadh","mufradat-ragheb","ishtiqaqi","quran-roots","qamoos","maqayees","lisan","basair-tamyeez","alsihah"];
+const out = {}, missing = [];
+slugs.forEach(s => {
+  const v = APP_DATA.arabic_words[s];
+  if (Array.isArray(v) && v.length) out[s] = { roots: v, how: "manual console" };
+  else missing.push(s);
+});
+console.table(Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.roots.length])));
+if (missing.length) console.warn("no list for:", missing);
+const a = document.createElement('a');
+a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 2)], {type: 'application/json'}));
+a.download = 'roots_by_source.json';
+a.click();
