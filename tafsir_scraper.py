@@ -1463,12 +1463,29 @@ def _d_setup(doc, font: str, size: float) -> None:
     _d_page_number_footer(doc, font)
 
 
+BASMALA_ORNAMENT = "\uFDFD"          # ﷽
+BASMALA_FONT = "Kitab"               # font used for the ﷽ line in docx files
+BASMALA_SKIP_SURAHS = {9}            # surahs that get no ﷽ (At-Tawba).  Add 1 here to skip Al-Fatiha, whose ayah 1 IS the basmala
+
+
+def _d_surah_basmala(doc, surah: int, first_ayah: int, size: float) -> None:
+    """﷽ centred under the surah heading, before the first ayah (not for surah 9, and only
+    when the content really starts at ayah 1 — a partial --ayahs range gets none)."""
+    if surah in BASMALA_SKIP_SURAHS or first_ayah != 1:
+        return
+    par = _d_par(doc, BASMALA_ORNAMENT, BASMALA_FONT, size + 10, color="C99200",
+                 align=WD_ALIGN_PARAGRAPH.CENTER, before=4, after=8)
+    par.paragraph_format.keep_with_next = True
+
+
 def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_break_surah: bool):
     """Emit surah → ayah-group content into *doc*.  sections = [(surah, records)]."""
     C = _DOCX_COLORS
     for idx, (s, recs) in enumerate(sections):
         _d_heading(doc, f"سورة {SUWAR[s - 1][1]}", 1, font, size + 6, C["surah"],
                    page_break=page_break_surah and idx > 0)
+        if recs:
+            _d_surah_basmala(doc, s, recs[0]["a_start"], size)
         for r in recs:
             rng = (ar_nums(r["a_start"]) if r["a_start"] == r["a_end"]
                    else f"{ar_nums(r['a_start'])}-{ar_nums(r['a_end'])}")
@@ -1849,6 +1866,8 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
     for k, (s, entries) in enumerate(sections):
         _d_heading(doc, f"سورة {SUWAR[s - 1][1]}", 1, font, size + 6, C["surah"],
                    page_break=k > 0)
+        if entries:
+            _d_surah_basmala(doc, s, entries[0]["a_start"], size)
         for e in entries:
             _d_heading(doc, f"الآية {_rng(e['a_start'], e['a_end'])}", 2, font, size + 2, C["ayah"], bold=False)
             head = quran_heading(quran, s, e["a_start"], e["a_end"])
