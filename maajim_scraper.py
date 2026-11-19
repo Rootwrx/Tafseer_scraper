@@ -422,7 +422,10 @@ def _json_entry(r) -> dict:
 
 # ─── DOCX (python-docx: RTL, real Heading styles → Navigation Pane, footnotes, page numbers) ───
 DOCX_COLORS = {"title": "805830", "letter": "256080", "root": "B8451A", "ink": "1A1008", "note": "555555"}
-VERSE_COLOR = "0F6B9C"
+VERSE_COLOR = "0F6B9C"        # ﴿…﴾  and  {…}
+STAR_VERSE_COLOR = "C2540A"   # (…) *   — a verse in parentheses is always followed by *
+NOTE_SEP_COLOR = "8FB5CC"     # short line before the footnotes (light shade of VERSE_COLOR)
+NOTE_SEP = "─" * 8
 POEM_COLOR = "C00000"
 POEM_MARK = "؎"
 LINE_SPACING = 0.9
@@ -441,7 +444,8 @@ _RPR_AFTER_BCS = ("w:i", "w:iCs", "w:caps", "w:smallCaps", "w:strike", "w:dstrik
                   "w:specVanish", "w:oMath")
 _RPR_AFTER_SZCS = _RPR_AFTER_BCS[_RPR_AFTER_BCS.index("w:szCs") + 1:]
 _RPR_AFTER_ICS = _RPR_AFTER_BCS[_RPR_AFTER_BCS.index("w:iCs") + 1:]
-_VERSE_RE = re.compile("([﴾﴿][^﴾﴿]*[﴾﴿])")
+# Quran quotations:  ﴿…﴾ / ﴾…﴿   {…}   and   (…) *   (parentheses count ONLY when followed by *)
+_QURAN_RE = re.compile(r"([﴾﴿][^﴾﴿]*[﴾﴿]|\{[^{}]*\}|\([^()]*\)[ \t]*\*)")
 _NUM_RE = re.compile(r"(\(\s*[\d٠-٩]+\s*\))")
 
 
@@ -562,16 +566,22 @@ def _d_setup(doc, font, size):
 
 
 def _d_text_runs(par, text, font, verse_font, sz, color):
-    """Quran quotations ﴿…﴾ in the verse font/colour, (١)-style numbers in the verse colour."""
-    for i, seg in enumerate(_VERSE_RE.split(text)):
+    """Quran quotations in the verse font (Kitab):  ﴿…﴾ and {…} blue,  (…) * dark orange.
+    Footnote numbers like (١) stay blue; every other parenthesis is ordinary text."""
+    for i, seg in enumerate(_QURAN_RE.split(text)):
         if not seg:
             continue
         if i % 2:
-            _d_run(par, seg, verse_font, sz - 2, color=VERSE_COLOR)
-            continue
-        for part in _NUM_RE.split(seg):
+            if seg[0] != "(":                                   # ﴿…﴾ or {…}
+                _d_run(par, seg, verse_font, sz - 2, color=VERSE_COLOR)
+                continue
+            if re.search(r"[^\s\d٠-٩()*]", seg):                  # (words) *  → a verse
+                _d_run(par, seg, verse_font, sz - 2, color=STAR_VERSE_COLOR)
+                continue
+        for part in _NUM_RE.split(seg):                         # plain text (+ "(١)" numbers)
             if part:
-                _d_run(par, part, font, sz, color=VERSE_COLOR if _NUM_RE.fullmatch(part) else color)
+                _d_run(par, part, font, sz,
+                       color=VERSE_COLOR if _NUM_RE.fullmatch(part) else color)
 
 
 def build_docx(out_path: Path, title: str, src: str, sections: list, font: str, size: float,
@@ -613,6 +623,8 @@ def build_docx(out_path: Path, title: str, src: str, sections: list, font: str, 
                 else:
                     par = _d_par(doc, "", TEXT_FONT, size, align=WD_ALIGN_PARAGRAPH.JUSTIFY)
                     _d_text_runs(par, line, TEXT_FONT, font, size, C["ink"])
+            if notes:
+                _d_par(doc, NOTE_SEP, font, max(10, size - 4), color=NOTE_SEP_COLOR, before=2, after=2)
             for i, note in enumerate(notes, 1):
                 par = _d_par(doc, "", TEXT_FONT, max(10, size - 4), after=2)
                 _d_run(par, f"({ar_nums(i)}) ", TEXT_FONT, max(10, size - 4), color=VERSE_COLOR)
