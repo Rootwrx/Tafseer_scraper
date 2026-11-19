@@ -74,6 +74,8 @@ Usage
     # ONE merged file (docx + md) instead of one file per surah
     python tafsir_scraper.py --src ibn-katheer --surah all --md --docx --merge
     python tafsir_scraper.py --src ibn-katheer --surah 1-9 --docx --merge
+    #   (merged --docx files also get the book intro from get_info.php, cached in <out_dir>/info/;
+    #    --no_info turns that off; per-surah files never get it)
     #   already downloaded?  run the SAME command again: it rebuilds from the saved raw/
     #   data and only requests what is missing (nothing missing → zero network requests)
 
@@ -1294,7 +1296,8 @@ def build_outputs(out_dir: Path, src: str, surahs: list[int], args, quran) -> No
                            args.font, args.docx_size, title_extra=f"سورة {SUWAR[s - 1][1]}")
         else:
             build_docx(target("docx", "docx"), src, sections, quran, args.font, args.docx_size,
-                       title_extra="" if len(sections) == 1 else stem)
+                       title_extra="" if len(sections) == 1 else stem,
+                       intro=SOURCE_INTRO.get(src, ""))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1526,6 +1529,77 @@ def _d_info_lines(doc, src: str, font: str, size: float) -> None:
         _d_run(par, val, font, size, color=C["ink"])
 
 
+# ── book intro (get_info.php) — shown once on the cover side of MERGED docx files only ──
+SOURCE_INTRO: dict[str, str] = {}   # slug → cleaned intro text, filled in main() before building
+
+
+def _clean_intro(raw) -> str:
+    if not isinstance(raw, str):
+        return ""
+    s = re.sub(r"<br\s*/?>", "\n", raw, flags=re.I)
+    s = _html.unescape(_TAG_RE.sub("", s)).replace("\u00a0", " ")
+    lines = [ln.strip() for ln in s.split("\n")]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def fetch_source_info(session, base: str, out_dir: Path, src: str, force: bool = False) -> str:
+    """Intro text of a book from  <base>/get_info.php?src=<src>  ('' if the book has none).
+    Cached in <out_dir>/info/<src>.json, so it is requested at most once per book.
+    A book without info (empty / 4xx answer) is cached as empty; a network failure is not."""
+    global _net_requests
+    path = out_dir / "info" / f"{src}.json"
+    if not force:
+        cached = load_json(path)
+        if isinstance(cached, dict):
+            return _clean_intro(cached.get("data"))
+    data, ok, last = {}, False, ""
+    for attempt in range(1, 4):
+        try:
+            with _net_lock:
+                _net_requests += 1
+            r = session.get(f"{base}/get_info.php", params={"src": src},
+                            headers={"Referer": f"{base}/{src}"}, timeout=25)
+            if r.status_code == 429 or r.status_code >= 500:
+                last = f"HTTP {r.status_code}"
+                time.sleep(2 ** attempt)
+                continue
+            if r.status_code == 403:
+                last = "HTTP 403"
+                break
+            if r.status_code < 400:
+                try:
+                    data = r.json()
+                except ValueError:
+                    data = {}
+            ok = True          # 200 or a 4xx like 404 → the book simply has no info
+            break
+        except Exception as e:
+            last = str(e)
+            time.sleep(2 ** attempt)
+    if not ok:
+        log(f"  [!] intro of {src} not fetched ({last}) — continuing without it")
+        return ""
+    raw = data.get("data") if isinstance(data, dict) else ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, {"data": raw if isinstance(raw, str) else ""})
+    return _clean_intro(raw)
+
+
+def _d_intro(doc, text: str, font: str, tf: str, size: float, level: int) -> None:
+    """Intro text: '* title' lines become headings (*level*), everything else is a paragraph."""
+    C = _DOCX_COLORS
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("*"):
+            head = line.lstrip("*").strip()
+            if head:
+                _d_heading(doc, head, level, font, size, C["surah"], bold=True)
+            continue
+        _d_rich(doc, line, tf, size, C["ink"], verse_font=font, align=WD_ALIGN_PARAGRAPH.JUSTIFY)
+
+
 BASMALA_ORNAMENT = "\uFDFD"          # ﷽
 BASMALA_FONT = "Kitab"               # font used for the ﷽ line in docx files
 BASMALA_SKIP_SURAHS = {9}            # surahs that get no ﷽ (At-Tawba).  Add 1 here to skip Al-Fatiha, whose ayah 1 IS the basmala
@@ -1541,12 +1615,13 @@ def _d_surah_basmala(doc, surah: int, first_ayah: int, size: float) -> None:
     par.paragraph_format.keep_with_next = True
 
 
-def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_break_surah: bool):
+def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_break_surah: bool,
+                break_first: bool = False):
     """Emit surah → ayah-group content into *doc*.  sections = [(surah, records)]."""
     C = _DOCX_COLORS
     for idx, (s, recs) in enumerate(sections):
         _d_heading(doc, f"سورة {SUWAR[s - 1][1]}", 1, font, size + 6, C["surah"],
-                   page_break=page_break_surah and idx > 0)
+                   page_break=page_break_surah and (idx > 0 or break_first))
         if recs:
             _d_surah_basmala(doc, s, recs[0]["a_start"], size)
         for r in recs:
@@ -1580,7 +1655,7 @@ def _d_sections(doc, src: str, sections, quran, font: str, size: float, page_bre
 
 
 def build_docx(out_path: Path, src: str, sections, quran, font: str, size: float,
-               title_extra: str = "") -> None:
+               title_extra: str = "", intro: str = "") -> None:
     if _docxlib is None:
         log("  [!] python-docx not installed — DOCX skipped (pip install python-docx)")
         return
@@ -1604,7 +1679,11 @@ def build_docx(out_path: Path, src: str, sections, quran, font: str, size: float
     _d_par(doc, f"المصدر: {BASE}/{src} | تاريخ التحميل: {time.strftime('%Y-%m-%d')}",
            font, 10, color="888888", align=WD_ALIGN_PARAGRAPH.CENTER, after=12)
 
-    _d_sections(doc, src, sections, quran, font, size, page_break_surah=True)
+    if intro:    # merged files only (the caller passes "" for per-surah files)
+        _d_heading(doc, "نبذة عن الكتاب", 1, font, size + 6, C["title"])
+        _d_intro(doc, intro, font, TAFSIR_FONT, size, 2)
+    _d_sections(doc, src, sections, quran, font, size, page_break_surah=True,
+                break_first=bool(intro))
     doc.save(str(out_path))
     n = sum(len(r) for _, r in sections)
     log(f"  [docx] saved → {out_path}  ({len(sections)} surah(s), {n} entries)")
@@ -1903,8 +1982,9 @@ def _d_tafsir_block(container, item, e, font: str, size: float, title_size: floa
 
 def build_combined_docx(out_path: Path, order: list[str], sections, quran, font: str,
                         size: float, title_extra: str = "", title_size: float = 20,
-                        bold: bool = False) -> None:
-    """sections = [(surah, entries)] from combined_entries()."""
+                        bold: bool = False, intros: dict | None = None) -> None:
+    """sections = [(surah, entries)] from combined_entries().
+    intros = {slug: text} → each book's intro once, after the cover (merged files only)."""
     if _docxlib is None:
         log("  [!] python-docx not installed — DOCX skipped (pip install python-docx)")
         return
@@ -1931,9 +2011,18 @@ def build_combined_docx(out_path: Path, order: list[str], sections, quran, font:
     _d_par(doc, f"تاريخ التحميل: {time.strftime('%Y-%m-%d')}", font, 10, color="888888",
            align=WD_ALIGN_PARAGRAPH.CENTER, before=8, after=12)
 
+    intros = {s_: t_ for s_, t_ in (intros or {}).items() if t_}
+    if intros:
+        _d_heading(doc, "نبذة عن الكتب", 1, font, size + 6, C["title"])
+        for idx, src in enumerate(order, 1):
+            if src in intros:
+                _d_heading(doc, _src_label(idx, src), 2, TAFSIR_FONT, title_size,
+                           SRC_FG[(idx - 1) % len(SRC_FG)], bold=False)
+                _d_intro(doc, intros[src], font, TAFSIR_FONT, size, 3)
+
     for k, (s, entries) in enumerate(sections):
         _d_heading(doc, f"سورة {SUWAR[s - 1][1]}", 1, font, size + 6, C["surah"],
-                   page_break=k > 0)
+                   page_break=k > 0 or bool(intros))
         if entries:
             _d_surah_basmala(doc, s, entries[0]["a_start"], size)
         for e in entries:
@@ -1992,7 +2081,8 @@ def build_combined(out_dir: Path, order: list[str], surahs: list[int], args, qur
             build_combined_docx(root / f"{stem}.docx", order, sections, quran,
                                 args.font, args.docx_size,
                                 title_extra="" if len(sections) == 1 else stem,
-                                title_size=args.tafsir_title_size, bold=args.tafsir_bold)
+                                title_size=args.tafsir_title_size, bold=args.tafsir_bold,
+                                intros={s_: SOURCE_INTRO.get(s_, "") for s_ in order})
 
 
 def report_incomplete(out_dir: Path, sources: list[str], surahs: list[int],
@@ -2103,6 +2193,8 @@ def main():
     p.add_argument("--merge", action="store_true",
                    help="put all requested surahs in ONE file per format (default: one file per "
                         "surah for every format; also applies to --combine)")
+    p.add_argument("--no_info", action="store_true",
+                   help="do not add the book intro (get_info.php) to merged docx files")
     p.add_argument("--font", default="Kitab",
                    help="DOCX font (must be installed on the machine opening the file). Word has no CSS-style "
                         "fallback stack, so only the first name of a list like \"Kitab, system-ui\" is used")
@@ -2318,6 +2410,12 @@ def main():
     if not build_any:
         log("[*] raw data saved — nothing built (pass --md / --docx / --json / --txt to build files)")
     else:
+        if args.docx and args.merge and not args.no_info:   # intros only go into full (merged) files
+            need = ([] if (combine_order and args.combine_only) else list(sources)) + combine_order
+            for src in dict.fromkeys(need):
+                SOURCE_INTRO[src] = fetch_source_info(get_session(), args.base, out_dir, src, args.force)
+            n_i = sum(1 for s_ in SOURCE_INTRO.values() if s_)
+            log(f"[*] book intro: {n_i} of {len(SOURCE_INTRO)} source(s) have one")
         log("[*] Building outputs ...")
         if not (combine_order and args.combine_only):
             for src in sources:
