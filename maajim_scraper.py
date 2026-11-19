@@ -45,9 +45,13 @@ Output tree
   <out_dir>/معاجم/<عنوان المعجم>/raw/tried.txt     every root already asked (ok / empty)
   <out_dir>/معاجم/<عنوان المعجم>/md|txt|json|docx/حرف <حرف>.<ext>     (--md --txt --json --docx)
   --merge → ONE file per format directly inside the dictionary folder
+  --merge --docx also puts the book intro (نبذة عن الكتاب, from get_info.php) right after the cover.
+      It is cached in <out_dir>/معاجم/info/<slug>.json (requested once per book); --no_info turns it off.
+      Per-letter docx files never get it.
 """
 
 import argparse
+import html
 import itertools
 import json
 import re
@@ -224,6 +228,59 @@ def clean_text(raw: str):
     t = re.sub(r"[ \t]+\n", "\n", t)
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
     return t, notes
+
+
+# ─── book intro (get_info.php) ──────────────────────────────────────────────
+
+SOURCE_INTRO: dict = {}      # slug → cleaned intro text, filled in main() for merged docx files
+_HEAD_RE = re.compile(r"<h[1-6][^>]*>([\s\S]*?)</h[1-6]>", re.I)
+_BLOCK_RE = re.compile(r"</?(?:p|div|li|ul|ol|tr|table|section|article|blockquote)\b[^>]*>", re.I)
+
+
+def clean_intro(raw) -> str:
+    """Intro text → plain lines.  <h1-6> titles become '* title' lines (headings in the docx),
+    block tags become line breaks, footnotes are listed at the end."""
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    t = _HEAD_RE.sub(lambda m: "\n* " + _TAG_RE.sub("", m.group(1)).strip() + "\n", raw)
+    t = _BLOCK_RE.sub("\n", t)
+    body, notes = clean_text(t)
+    body = html.unescape(body).replace("\xa0", " ")
+    out = [l for l in (" ".join(x.split()) for x in body.split("\n")) if l]
+    out += [f"({ar_nums(i)}) {' '.join(html.unescape(n).split())}" for i, n in enumerate(notes, 1)]
+    return "\n".join(out)
+
+
+def fetch_source_info(session, base, out_dir: Path, src, force=False) -> str:
+    """Intro of a dictionary from <base>/get_info.php?src=<slug>  ('' if it has none).
+    Cached in <out_dir>/معاجم/info/<slug>.json so it is requested at most once per book.
+    A book without info (empty / 4xx answer) is cached as empty; a network failure or an
+    unexpected reply is not cached (the next run tries again)."""
+    path = out_dir / GROUP_DIR / "info" / f"{src}.json"
+    if not force:
+        cached = load_json(path)
+        if isinstance(cached, dict):
+            return clean_intro(cached.get("data"))
+    try:
+        r = request(session, f"{base}/get_info.php", {"src": src}, referer=f"{base}/{src}", retries=3)
+    except Exception as e:
+        log(f"  [!] intro of {src} not fetched ({e}) — continuing without it")
+        return ""
+    raw = ""
+    if r.status_code < 400:
+        try:
+            js = r.json()
+        except ValueError:
+            js = {}
+        if isinstance(js, dict):
+            if isinstance(js.get("data"), str):
+                raw = js["data"]
+            elif js and "data" not in js:
+                log(f"  [!] intro of {src}: unexpected reply (keys {list(js)[:5]}) — no intro, not cached")
+                return ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(path, {"data": raw})
+    return clean_intro(raw)
 
 
 
@@ -412,7 +469,11 @@ def letter_of(root: str) -> str:
 
 def _sorted_entries(ents: dict):
     order = {ch: i for i, ch in enumerate("أبتثجحخدذرزسشصضطظعغفقكلمنهوي")}
-    return sorted(ents.values(), key=lambda r: ([order.get(ch, 99) for ch in r["w"]], r["w"]))
+    for ch in "إآءاٱ":
+        order[ch] = order["أ"]
+    order["ى"] = order["ي"]
+    return sorted(ents.values(),
+                  key=lambda r: ([order.get(ch, 99) for ch in norm_root(r["w"])], r["w"]))
 
 
 def _md_entry(r) -> str:
@@ -597,9 +658,26 @@ def _d_text_runs(par, text, font, verse_font, sz, color):
                        color=VERSE_COLOR if _NUM_RE.fullmatch(part) else color)
 
 
+def _d_intro(doc, text: str, font: str, tf: str, size: float) -> None:
+    """Intro text: '* title' lines become Heading 3 (below the Heading 1 'نبذة عن الكتاب', and never
+    Heading 2, which is reserved for the roots); everything else is a justified paragraph."""
+    C = DOCX_COLORS
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("*"):
+            head = line.lstrip("*").strip()
+            if head:
+                _d_heading(doc, head, 3, font, size + 2, C["letter"], bold=True)
+            continue
+        par = _d_par(doc, "", tf, size, align=WD_ALIGN_PARAGRAPH.JUSTIFY)
+        _d_text_runs(par, line, tf, font, size, C["ink"])
+
+
 def build_docx(out_path: Path, title: str, src: str, sections: list, font: str, size: float,
-               title_extra: str = "") -> None:
-    """sections = [(letter, [entry, …])]"""
+               title_extra: str = "", intro: str = "") -> None:
+    """sections = [(letter, [entry, …])]; intro (merged files only) goes after the cover block."""
     if _docxlib is None:
         log("  [!] python-docx not installed — DOCX skipped (pip install python-docx)")
         return
@@ -619,9 +697,14 @@ def build_docx(out_path: Path, title: str, src: str, sections: list, font: str, 
     _d_par(doc, f"المصدر: {BASE}/{src} | تاريخ التحميل: {time.strftime('%Y-%m-%d')}", font, 10,
            color="888888", align=WD_ALIGN_PARAGRAPH.CENTER, after=12)
 
+    if intro:    # merged files only (the caller passes "" for per-letter files)
+        _d_heading(doc, "نبذة عن الكتاب", 1, font, size + 6, C["title"])
+        _d_intro(doc, intro, font, TEXT_FONT, size)
+
     n = 0
     for k, (letter, entries) in enumerate(sections):
-        _d_heading(doc, f"حرف {letter}", 1, font, size + 6, C["letter"], page_break=k > 0)
+        _d_heading(doc, f"حرف {letter}", 1, font, size + 6, C["letter"],
+                   page_break=k > 0 or bool(intro))
         for r in entries:
             n += 1
             _d_heading(doc, r["w"], 2, font, size + 2, C["root"], bold=False)
@@ -684,7 +767,7 @@ def build_outputs(args, out_dir, src, titles) -> None:
     if args.docx:
         if args.merge:
             build_docx(base / f"{title}.docx", title, src, list(by_letter.items()), args.font,
-                       args.docx_size)
+                       args.docx_size, intro=SOURCE_INTRO.get(src, ""))
         else:
             (base / "docx").mkdir(exist_ok=True)
             for ch, rs in by_letter.items():
@@ -722,6 +805,8 @@ def main():
     g.add_argument("--json", action="store_true")
     g.add_argument("--docx", action="store_true", help="Word files (needs python-docx)")
     g.add_argument("--merge", action="store_true", help="ONE file per format instead of one per first letter")
+    g.add_argument("--no_info", action="store_true",
+                   help="do not add the book intro (get_info.php) to merged docx files")
     g.add_argument("--font", default="Kitab", help="DOCX font for headings / verses")
     g.add_argument("--tafsir_font", default="KFGQPC Uthman Taha Naskh", help="DOCX font of the entry text")
     g.add_argument("--docx_size", type=float, default=16, help="DOCX body size in pt")
@@ -791,6 +876,11 @@ def main():
             log(f"  [!] {src}: every answer was empty — wrong slug or root spelling (try --probe)")
 
     if args.md or args.txt or args.json or args.docx:
+        if args.docx and args.merge and not args.no_info:   # intros only go into merged files
+            for src in sources:
+                SOURCE_INTRO[src] = fetch_source_info(session, args.base, out_dir, src, args.force)
+            n_i = sum(1 for v in SOURCE_INTRO.values() if v)
+            log(f"[*] book intro: {n_i} of {len(SOURCE_INTRO)} dictionary(ies) have one")
         log("[*] building outputs ...")
         for src in sources:
             build_outputs(args, out_dir, src, titles)
