@@ -1,0 +1,7 @@
+missing data 
+ in tafsir.app for quran-roots
+ 	when expanding text (that expanded text is absent in the docx,  even if it's fetched)
+
+ examples 
+ https://tafsir.app/get_word.php?src=quran-roots&w=%D8%B2%D8%AC%D9%88
+ 

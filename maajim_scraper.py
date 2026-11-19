@@ -202,6 +202,37 @@ def fetch_word(session, base, src, root):
 _TAG_RE = re.compile(r"<[^>]+>")
 _PAGE_RE = re.compile(r"\(p-[\d٠-٩]+\)")
 _FN_RE = re.compile(r" ?\[\[([\s\S]*?\]*)\]\]")
+# HTML structure used by some dictionaries (e.g. quran-roots: <ul> stats, <h3> groups, <table> examples)
+_REF_RE = re.compile(r'<a\s[^>]*href="/ayah-morph/[^"]*"[^>]*>([\s\S]*?)</a>', re.I)   # 34:11:3 reference link
+_H_OPEN_RE = re.compile(r"<h[1-6]\b[^>]*>", re.I)
+_H_CLOSE_RE = re.compile(r"</h[1-6]\s*>", re.I)
+_LINE_TAG_RE = re.compile(r"</?(?:p|div|ul|ol|li|table|thead|tbody|tfoot|tr)\b[^>]*>", re.I)
+_CELL_END_RE = re.compile(r"</t[dh]\s*>", re.I)
+# quran-roots: every example row is  <tr><td [class="click" data-ayah="{s} rest"]>verse</td><td><a href="/ayah-morph/…">ref</a></td></tr>
+#   - if data-ayah exists the cell shows only the beginning of the ayah; the hidden rest lives there ({s} = shown text)
+#   - otherwise the cell already holds the whole verse
+#   Either way the verse cell is wrapped in private markers (kept only when mark=True, for the docx font/colour).
+VERSE_OPEN, VERSE_CLOSE = "\ue001", "\ue002"
+_TD_RE = re.compile(r"<td\b([^>]*)>([\s\S]*?)</td>", re.I)
+_DATA_AYAH_RE = re.compile(r'data-ayah="([^"]*)"', re.I)
+
+
+def _expand_ayah(m):
+    attrs, inner = m.group(1), m.group(2)
+    if "/ayah-morph/" in inner:                       # the reference cell, not a verse
+        return m.group(0)
+    shown = html.unescape(_TAG_RE.sub("", inner)).replace("\xa0", " ").strip()
+    if not shown:
+        return m.group(0)
+    full = shown
+    da = _DATA_AYAH_RE.search(attrs)
+    if da:
+        extra = html.unescape(da.group(1))
+        full = extra.replace("{s}", shown).strip() if "{s}" in extra else (extra.strip() or shown)
+    return f"<td>{VERSE_OPEN}{html.escape(full, quote=False)}{VERSE_CLOSE}</td>"
+
+
+HEAD_MARK = "\ue000"     # private marker put before a heading line when clean_text(mark=True) (docx only)
 
 
 _LIG = {"\uFD40": "رحمه الله", "\uFD41": "رضي الله عنه", "\uFD42": "رضي الله عنها",
@@ -213,12 +244,23 @@ _LIG = {"\uFD40": "رحمه الله", "\uFD41": "رضي الله عنه", "\uFD
         "\uFDFE": "سبحانه وتعالى", "\uFDFF": "عز وجل"}   # ﷺ (U+FDFA) is kept: most fonts have it
 
 
-def clean_text(raw: str):
+def clean_text(raw: str, mark: bool = False):
+    """→ (text, footnotes).  Block tags (<li> <tr> <h1-6> <p> <div> …) become line breaks, table cells of
+    one row stay on one line, a verse reference link becomes (٣٤:١١:٣), HTML entities (&nbsp; …) are decoded.
+    mark=True puts HEAD_MARK before each <h1-6> line so the docx can show it as a sub-heading."""
     if not raw:
         return "", []
     raw = "".join(_LIG.get(ch, ch) for ch in raw)
+    if "root-table" in raw:                           # quran-roots: restore collapsed ayahs + mark every verse cell
+        raw = _TD_RE.sub(_expand_ayah, raw)
     t = re.sub(r"<br\s*/?>", "\n", raw)
+    t = _REF_RE.sub(lambda m: "(" + re.sub(r"\s+", "", html.unescape(_TAG_RE.sub("", m.group(1)))) + ")", t)
+    t = _H_OPEN_RE.sub("\n" + (HEAD_MARK if mark else ""), t)
+    t = _H_CLOSE_RE.sub("\n", t)
+    t = _LINE_TAG_RE.sub("\n", t)
+    t = _CELL_END_RE.sub(" ", t)
     t = _TAG_RE.sub("", t)
+    t = html.unescape(t).replace("\xa0", " ")
     t = _PAGE_RE.sub("", t)
     notes = []
 
@@ -227,6 +269,8 @@ def clean_text(raw: str):
         return f" ({ar_nums(len(notes))})"
 
     t = _FN_RE.sub(_fn, t)
+    if not mark:
+        t = t.replace(VERSE_OPEN, "").replace(VERSE_CLOSE, "")
     t = re.sub(r"[ \t]+\n", "\n", t)
     t = re.sub(r"\n{3,}", "\n\n", t).strip()
     return t, notes
@@ -248,9 +292,8 @@ def clean_intro(raw) -> str:
     t = _HEAD_RE.sub(lambda m: "\n* " + _TAG_RE.sub("", m.group(1)).strip() + "\n", raw)
     t = _BLOCK_RE.sub("\n", t)
     body, notes = clean_text(t)
-    body = html.unescape(body).replace("\xa0", " ")
     out = [l for l in (" ".join(x.split()) for x in body.split("\n")) if l]
-    out += [f"({ar_nums(i)}) {' '.join(html.unescape(n).split())}" for i, n in enumerate(notes, 1)]
+    out += [f"({ar_nums(i)}) {' '.join(n.split())}" for i, n in enumerate(notes, 1)]
     return "\n".join(out)
 
 
@@ -522,6 +565,7 @@ POEM_COLOR = "C00000"
 POEM_MARK = "؎"
 LINE_SPACING = 0.9
 PAGE_BG = "F3EEE2"
+QUOTE_COLOR = "C00000"        # text between « and » (guillemets included) is red
 TEXT_FONT = "KFGQPC Uthman Taha Naskh"
 
 _PPR_AFTER_BIDI = ("w:adjustRightInd", "w:snapToGrid", "w:spacing", "w:ind", "w:contextualSpacing",
@@ -537,7 +581,9 @@ _RPR_AFTER_BCS = ("w:i", "w:iCs", "w:caps", "w:smallCaps", "w:strike", "w:dstrik
 _RPR_AFTER_SZCS = _RPR_AFTER_BCS[_RPR_AFTER_BCS.index("w:szCs") + 1:]
 _RPR_AFTER_ICS = _RPR_AFTER_BCS[_RPR_AFTER_BCS.index("w:iCs") + 1:]
 # Quran quotations:  ﴿…﴾ / ﴾…﴿   {…}   and   (…) *   (parentheses count ONLY when followed by *)
-_QURAN_RE = re.compile(r"([﴾﴿][^﴾﴿]*[﴾﴿]|\{[^{}]*\}|\([^()]*\)[ \t]*\*)")
+_QURAN_INNER_RE = re.compile(r"([﴾﴿][^﴾﴿]*[﴾﴿]|\{[^{}]*\}|\([^()]*\)[ \t]*\*)")
+_QURAN_RE = re.compile(r"([﴾﴿][^﴾﴿]*[﴾﴿]|\{[^{}]*\}|\([^()]*\)[ \t]*\*|«[^«»]*»)")   # + «…» quotations
+_GUILL_RE = re.compile(r"(«[^«»]*»)")
 _NUM_RE = re.compile(r"(\(\s*[\d٠-٩]+\s*\))")
 
 
@@ -597,7 +643,9 @@ def _d_heading(doc, text, level, font, size, color, page_break=False, bold=True)
     h.paragraph_format.keep_with_next = True
     if page_break:
         h.paragraph_format.page_break_before = True
-    _d_run(h, text, font, size, bold, color)
+    for i, seg in enumerate(_GUILL_RE.split(text)):         # «…» inside a heading is red too
+        if seg:
+            _d_run(h, seg, font, size, bold, QUOTE_COLOR if i % 2 else color)
     return h
 
 
@@ -657,13 +705,17 @@ def _d_setup(doc, font, size):
     _d_footer(doc, font)
 
 
-def _d_text_runs(par, text, font, verse_font, sz, color):
+def _d_text_runs(par, text, font, verse_font, sz, color, _inner=False):
     """Quran quotations in the verse font (Kitab):  ﴿…﴾ and {…} blue,  (…) * dark orange.
+    «…» quotations are red (a verse inside one keeps its own colour).
     Footnote numbers like (١) stay blue; every other parenthesis is ordinary text."""
-    for i, seg in enumerate(_QURAN_RE.split(text)):
+    for i, seg in enumerate((_QURAN_INNER_RE if _inner else _QURAN_RE).split(text)):
         if not seg:
             continue
         if i % 2:
+            if seg[0] == "«":                                   # «…» → red, same font
+                _d_text_runs(par, seg, font, verse_font, sz, QUOTE_COLOR, _inner=True)
+                continue
             if seg[0] != "(":                                   # ﴿…﴾ or {…}
                 _d_run(par, seg, verse_font, sz - 2, color=VERSE_COLOR)
                 continue
@@ -730,17 +782,31 @@ def build_docx(out_path: Path, title: str, src: str, sections: list, font: str, 
         for r in entries:
             n += 1
             _d_heading(doc, r["w"], 2, font, size + 2, C["root"], bold=False)
-            body, notes = clean_text(r["data"])
+            body, notes = clean_text(r["data"], mark=True)
             for line in body.split("\n"):
                 line = line.strip()
                 if not line:
+                    continue
+                if line.startswith(HEAD_MARK):        # <h1-6> inside an entry → Heading 3 under the root
+                    head = line.lstrip(HEAD_MARK).strip()
+                    if head:
+                        _d_heading(doc, head, 3, font, size + 1, C["letter"], bold=True)
                     continue
                 if line.startswith(POEM_MARK):
                     _d_par(doc, line.lstrip(POEM_MARK).strip(), TEXT_FONT, size, color=POEM_COLOR,
                            align=WD_ALIGN_PARAGRAPH.CENTER, before=4, after=4)
                 else:
                     par = _d_par(doc, "", TEXT_FONT, size, align=WD_ALIGN_PARAGRAPH.JUSTIFY)
-                    _d_text_runs(par, line, TEXT_FONT, font, size, C["ink"])
+                    if VERSE_OPEN in line:               # example ayah: Kitab font, VERSE_COLOR; the rest as usual
+                        for k, seg in enumerate(re.split(f"[{VERSE_OPEN}{VERSE_CLOSE}]", line)):
+                            if not seg.strip():
+                                continue
+                            if k % 2:
+                                _d_run(par, seg.strip() + " ", font, size - 2, color=VERSE_COLOR)
+                            else:
+                                _d_text_runs(par, seg, TEXT_FONT, font, size, C["ink"])
+                    else:
+                        _d_text_runs(par, line, TEXT_FONT, font, size, C["ink"])
             if notes:
                 _d_par(doc, NOTE_SEP, font, max(10, size - 4), color=NOTE_SEP_COLOR, before=2, after=2)
             for i, note in enumerate(notes, 1):
